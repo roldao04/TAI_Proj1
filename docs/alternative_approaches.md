@@ -1,0 +1,330 @@
+# Alternative Approaches to Lossless Compression
+
+This document explores alternative entropy coding and modeling techniques that could be used instead of or alongside our current implementation.
+
+---
+
+## Important Note: Authorship Requirements
+
+Per project guidelines:
+- **Entropy Coders** (arithmetic, Huffman, etc.): Can use code from other authors **with proper attribution**
+- **Modeling Modules**: **Must be implemented by the group** (original work required)
+
+---
+
+## Part 1: Alternative Entropy Coders
+
+These are alternatives to arithmetic coding for the encoding/decoding stage.
+
+### 1. Huffman Coding
+
+**What It Is**: Builds a binary tree based on symbol frequencies, assigning shorter bit codes to more frequent symbols.
+
+**Strengths**:
+- Simple to understand and implement
+- Fast encoding and decoding
+- No precision issues (uses discrete bits)
+- Well-established with many reference implementations
+
+**Weaknesses**:
+- Less efficient than arithmetic coding (must use whole bits per symbol)
+- Requires building and storing the Huffman tree
+- Theoretically suboptimal (can be 1 bit per symbol worse than entropy)
+- Two-pass required: one to build tree, one to encode
+
+**When to Use**:
+- Speed is more important than optimal compression
+- Simple implementation is preferred
+- Working with small alphabets
+
+---
+
+### 2. Range Coding
+
+**What It Is**: A variant of arithmetic coding that's simpler to implement and avoids some patent issues (historically).
+
+**Strengths**:
+- Nearly identical compression efficiency to arithmetic coding
+- Slightly simpler implementation
+- Faster in practice (fewer operations)
+- No carry propagation issues
+
+**Weaknesses**:
+- Still requires careful handling of precision
+- More complex than Huffman
+- Less common (fewer reference implementations)
+
+**When to Use**:
+- Want arithmetic coding efficiency with simpler implementation
+- Performance-critical applications
+
+---
+
+### 3. Asymmetric Numeral Systems (ANS)
+
+**What It Is**: Modern entropy coder (2009) used in Zstandard and other modern compressors. Encodes by treating data as a large number in a custom numeral system.
+
+**Strengths**:
+- Extremely fast (faster than both Huffman and arithmetic)
+- Achieves same compression as arithmetic coding
+- Simple state machine implementation
+- Increasingly popular in modern compressors
+
+**Weaknesses**:
+- Relatively new (less established)
+- Requires understanding of the mathematical foundation
+- Fewer educational resources
+- Decoder reads backwards (complicates streaming)
+
+**When to Use**:
+- Modern high-performance compression
+- Speed is critical
+- Willing to work with newer techniques
+
+---
+
+### 4. Adaptive Arithmetic Coding
+
+**What It Is**: Arithmetic coding where probabilities are updated during encoding (no separate frequency-counting pass).
+
+**Strengths**:
+- Single-pass algorithm (no need to scan data first)
+- Adapts to changing statistics within the file
+- No need to store frequency table in header (saves 1028 bytes)
+- Better for streaming data
+
+**Weaknesses**:
+- Slightly more complex implementation
+- Encoder and decoder must use identical update rules
+- Can be slower if updates are expensive
+- May perform worse on short files
+
+**When to Use**:
+- Streaming or online compression
+- File statistics change over time
+- Want to eliminate header overhead
+
+---
+
+## Part 2: Alternative Modeling Approaches
+
+These improve probability estimation beyond simple order-0 frequency counting.
+
+### 1. Order-k Markov Models
+
+**What It Is**: Use the previous k bytes as context to predict the next byte. Maintains separate frequency tables for each context.
+
+**Strengths**:
+- Exploits patterns in data ("TH" often follows "E" in English)
+- Significantly better compression than order-0 (10-30% improvement typical)
+- Tunable complexity (choose k based on memory/performance trade-off)
+- Natural extension of order-0
+
+**Weaknesses**:
+- Exponential memory growth: 256^k contexts possible
+- Sparse contexts (many never seen) waste space
+- Requires escape mechanism for unseen contexts
+- More complex implementation
+
+**When to Use**:
+- Text data with repetitive patterns
+- Structured data (code, XML, JSON)
+- Enough memory for context tables (k=2 to k=4 typical)
+
+**Implementation Note**: This is modeling work - must be implemented by the group.
+
+---
+
+### 2. Adaptive/Dynamic Frequency Models
+
+**What It Is**: Start with uniform frequencies, update them after encoding each symbol.
+
+**Strengths**:
+- No separate counting pass (single-pass compression)
+- Adapts to local statistics in the file
+- Eliminates frequency table overhead
+- Good for files with changing statistics
+
+**Weaknesses**:
+- May compress less efficiently at the start (uniform probabilities)
+- Requires careful synchronization between encoder/decoder
+- Choice of update strategy affects performance
+- More complex than static models
+
+**When to Use**:
+- Streaming data
+- Files with evolving statistics
+- Want single-pass compression
+
+**Implementation Note**: This is modeling work - must be implemented by the group.
+
+---
+
+### 3. PPM (Prediction by Partial Matching)
+
+**What It Is**: Advanced context modeling that uses multiple order models (0, 1, 2, ..., k) with fallback ("escape") mechanism.
+
+**Strengths**:
+- State-of-the-art compression for text
+- Gracefully handles unseen contexts
+- Adapts context length to available patterns
+- Excellent on structured data
+
+**Weaknesses**:
+- Very complex implementation
+- High memory usage
+- Slow (many table lookups per symbol)
+- Many tuning parameters
+
+**When to Use**:
+- Maximum compression is critical
+- Text-heavy data
+- Willing to invest significant implementation effort
+
+**Implementation Note**: This is modeling work - must be implemented by the group.
+
+---
+
+### 4. Dictionary-Based Models (LZ77, LZ78, LZW)
+
+**What It Is**: Instead of modeling byte frequencies, find repeated substrings and replace with references to earlier occurrences.
+
+**Strengths**:
+- Excellent for data with repeated phrases
+- Fast decoding (just copy operations)
+- No probability calculations needed
+- Works well with Huffman or arithmetic coding (hybrid approach)
+
+**Weaknesses**:
+- Different paradigm (not frequency-based)
+- May perform poorly on non-repetitive data
+- Sliding window size affects compression/memory
+- Patent issues historically (LZW)
+
+**When to Use**:
+- Highly repetitive data
+- Want fast decompression
+- Combining with entropy coding (e.g., DEFLATE = LZ77 + Huffman)
+
+**Implementation Note**: This is modeling work - must be implemented by the group.
+
+---
+
+### 5. Block-Sorting Transform (BWT)
+
+**What It Is**: Preprocessing step that rearranges data to group similar bytes together (used by bzip2).
+
+**Strengths**:
+- Dramatically improves compressibility for simple models
+- Order-0 model on BWT data ≈ high-order model on original
+- Reversible transformation
+- Excellent for text data
+
+**Weaknesses**:
+- Requires entire block in memory (memory-intensive)
+- Slow (sorting operation is expensive)
+- Complex implementation
+- Must pair with entropy coder (BWT alone doesn't compress)
+
+**When to Use**:
+- Want simple model with high-order performance
+- Text or structured data
+- Memory available for large blocks
+
+**Implementation Note**: This is modeling work - must be implemented by the group.
+
+---
+
+### 6. Run-Length Encoding (RLE)
+
+**What It Is**: Replace runs of repeated bytes with (byte, count) pairs.
+
+**Strengths**:
+- Extremely simple to implement
+- Very fast
+- Excellent for highly repetitive data (images with solid colors)
+- Can be used as preprocessing step
+
+**Weaknesses**:
+- Only helps on repetitive data
+- Can expand data with no runs (worst case: 2x size)
+- Poor general-purpose compressor
+- Rarely used alone
+
+**When to Use**:
+- Preprocessing for other methods
+- Data known to have long runs
+- Need simplest possible compression
+
+**Implementation Note**: This is modeling work - must be implemented by the group.
+
+---
+
+## Comparison Summary
+
+### Entropy Coders (Encoding Stage)
+
+| Method | Compression | Speed | Complexity |
+|--------|-------------|-------|------------|
+| Huffman | Good | Fast | Simple |
+| Arithmetic | Excellent | Medium | Medium |
+| Range | Excellent | Fast | Medium |
+| ANS | Excellent | Very Fast | Medium |
+
+### Models (Probability Estimation)
+
+| Method | Compression | Memory | Complexity | Best For |
+|--------|-------------|--------|------------|----------|
+| Order-0 | Fair | Low | Simple | General-purpose |
+| Order-k | Good-Excellent | Medium-High | Medium | Text, structured data |
+| Adaptive | Good | Low | Medium | Streaming, small files |
+| PPM | Excellent | High | High | Text, maximum compression |
+| Dictionary (LZ) | Good-Excellent | Medium | Medium | Repetitive data |
+| BWT | Excellent | High | High | Text with simple coder |
+| RLE | Poor-Excellent | Low | Very Simple | Highly repetitive data |
+
+---
+
+## Practical Recommendations
+
+### For Better Compression Ratios
+
+1. **Easy**: Implement order-2 Markov model (big improvement, reasonable complexity)
+2. **Medium**: Add BWT preprocessing (excellent for text)
+3. **Hard**: Implement PPM (state-of-the-art, very complex)
+
+### For Better Speed
+
+1. **Easy**: Switch to Range Coding or ANS (faster than arithmetic, same compression)
+2. **Medium**: Add LZ77 dictionary phase (fast decoding)
+
+### For Flexibility (Extra Points)
+
+1. Detect file type (text vs binary vs already-compressed)
+2. Choose model based on detection:
+   - Text: Order-k or BWT + Order-0
+   - Binary: Order-0 or LZ77
+   - Compressed: Store uncompressed (avoid expansion)
+
+---
+
+## References for Entropy Coders (External Code Allowed)
+
+If using external implementations, ensure proper attribution:
+
+- **Arithmetic Coding**: Sayood's "Introduction to Data Compression" (reference algorithms)
+- **Range Coding**: Schindler's implementations
+- **ANS**: Jarek Duda's reference implementation
+- **Huffman**: Widely available (public domain implementations)
+
+Remember: Modeling code must still be original group work!
+
+---
+
+## Current Implementation
+
+Our system uses:
+- **Entropy Coder**: Arithmetic coding (32-bit precision)
+- **Model**: Order-0 static frequency model
+
+This is a solid foundation. The alternatives above represent potential improvements for enhanced compression, speed, or flexibility.

@@ -60,7 +60,7 @@ Arithmetic coding **encodes a sequence of symbols into a single number** between
 
 ### How It Works
 
-1. **Start with interval [0, 1)**
+1. **Start with interval [0, 1]**
 
 2. **For each symbol**:
    - Divide the current interval into sub-intervals proportional to symbol probabilities

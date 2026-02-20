@@ -1,8 +1,12 @@
 # Lossless Data Compression Tool
 
 **TAI Project #1 - 2025/26**
+
 **Algorithmic Information Theory**
+
 **Universidade de Aveiro**
+
+**Group 07**
 
 ---
 

@@ -32,7 +32,7 @@ cat > "$RESULTS_MD" << EOF
 
 **Project**: TAI - Algorithmic Information Theory
 **Date**: $(date +"%Y-%m-%d")
-**Tools Compared**: Our Compressor, gzip, bzip2, xz (LZMA), zstd
+**Tools Compared**: G07, gzip, bzip2, xz (LZMA), zstd
 
 ---
 
@@ -136,11 +136,11 @@ for file in "$DATA_DIR"/*; do
     rm -f "$TEMP_DIR/${basename}."*.result
 
     # Test our compressor
-    echo -n "  Testing Our Compressor... "
-    benchmark_file_tool "$file" "$basename" "our" \
-        "./bin/compress '$file' '$TEMP_DIR/${basename}.our'" \
-        "./bin/decompress '$TEMP_DIR/${basename}.our' '$TEMP_DIR/${basename}.our.decompressed'" \
-        "$TEMP_DIR/${basename}.our" \
+    echo -n "  Testing G07... "
+    benchmark_file_tool "$file" "$basename" "g07" \
+        "./bin/compress '$file' '$TEMP_DIR/${basename}.g07'" \
+        "./bin/decompress '$TEMP_DIR/${basename}.g07' '$TEMP_DIR/${basename}.g07.decompressed'" \
+        "$TEMP_DIR/${basename}.g07" \
         "$original_size"
     echo -e "${GREEN}✓${NC}"
 
@@ -185,7 +185,7 @@ for file in "$DATA_DIR"/*; do
     echo
 
     # Collect results and write to CSV
-    for tool in our gzip bzip2 xz zstd; do
+    for tool in g07 gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             result=$(cat "$result_file")
@@ -199,7 +199,7 @@ echo "## Quick Summary" >> "$RESULTS_MD"
 echo >> "$RESULTS_MD"
 echo "### Compression Ratio Comparison" >> "$RESULTS_MD"
 echo >> "$RESULTS_MD"
-echo "| File | Size | Our Tool | gzip | bzip2 | xz | zstd | Winner |" >> "$RESULTS_MD"
+echo "| File | Size | G07 | gzip | bzip2 | xz | zstd | Winner |" >> "$RESULTS_MD"
 echo "|------|------|----------|------|-------|----|----|--------|" >> "$RESULTS_MD"
 
 # Process each file for quick summary
@@ -218,7 +218,7 @@ for file in "$DATA_DIR"/*; do
     best_ratio=999.99
     best_tool=""
 
-    for tool in our gzip bzip2 xz zstd; do
+    for tool in g07 gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             ratio=$(cat "$result_file" | cut -d',' -f2)
@@ -230,7 +230,7 @@ for file in "$DATA_DIR"/*; do
             fi
 
             # Mark if our tool
-            if [ "$tool" = "our" ] && [ "$best_tool" = "our" ]; then
+            if [ "$tool" = "g07" ] && [ "$best_tool" = "g07" ]; then
                 echo -n " **${ratio}%** ⭐ |" >> "$RESULTS_MD"
             elif [ "$tool" = "$best_tool" ]; then
                 echo -n " **${ratio}%** ⭐ |" >> "$RESULTS_MD"
@@ -274,7 +274,7 @@ for file in "$DATA_DIR"/*; do
     echo "| Tool | Compressed Size | Ratio | Bits/Symbol | Compress Time | Decompress Time | Space Saved | Lossless |" >> "$RESULTS_MD"
     echo "|------|-----------------|-------|-------------|---------------|-----------------|-------------|----------|" >> "$RESULTS_MD"
 
-    for tool in our gzip bzip2 xz zstd; do
+    for tool in g07 gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless <<< $(cat "$result_file")
@@ -325,7 +325,7 @@ echo "|------|-------------------|---------|" >> "$RESULTS_MD"
 
 # Calculate averages and rank
 declare -A avg_compress_time
-for tool in our gzip bzip2 xz zstd; do
+for tool in g07 gzip bzip2 xz zstd; do
     total_time=0
     count=0
     for file in "$DATA_DIR"/*; do
@@ -366,7 +366,7 @@ echo "|------|---------------------|---------|" >> "$RESULTS_MD"
 
 # Calculate averages and rank
 declare -A avg_decompress_time
-for tool in our gzip bzip2 xz zstd; do
+for tool in g07 gzip bzip2 xz zstd; do
     total_time=0
     count=0
     for file in "$DATA_DIR"/*; do
@@ -438,7 +438,7 @@ echo >> "$RESULTS_MD"
 
 echo "### Files Won by Each Tool" >> "$RESULTS_MD"
 echo >> "$RESULTS_MD"
-for tool in our gzip bzip2 xz zstd; do
+for tool in g07 gzip bzip2 xz zstd; do
     wins=${tool_wins[$tool]:-0}
     echo "- **$tool**: $wins file(s)" >> "$RESULTS_MD"
 done
@@ -453,7 +453,7 @@ echo >> "$RESULTS_MD"
 echo "| Tool | Total Original | Total Compressed | Average Ratio | Bits/Symbol | Files Tested |" >> "$RESULTS_MD"
 echo "|------|---------------|------------------|---------------|-------------|--------------|" >> "$RESULTS_MD"
 
-for tool in our gzip bzip2 xz zstd; do
+for tool in g07 gzip bzip2 xz zstd; do
     if [ ${tool_file_count[$tool]:-0} -gt 0 ]; then
         total_orig=${tool_total_original[$tool]}
         total_comp=${tool_total_compressed[$tool]}
@@ -477,7 +477,7 @@ echo
 printf "${BOLD}%-15s %15s %15s %15s${NC}\n" "Tool" "Total Original" "Total Compressed" "Avg Ratio"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-for tool in our gzip bzip2 xz zstd; do
+for tool in g07 gzip bzip2 xz zstd; do
     if [ ${tool_file_count[$tool]:-0} -gt 0 ]; then
         total_orig=${tool_total_original[$tool]}
         total_comp=${tool_total_compressed[$tool]}

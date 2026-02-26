@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Benchmark script to compare compression tools
-# Compares: our tool, gzip, bzip2, xz (lzma), zstd
+# Compares: g07, gzip, bzip2, xz (lzma), zstd
 
 set -e
 
@@ -80,10 +80,10 @@ benchmark() {
 }
 
 # Our compressor
-benchmark "Our Compressor" \
-    "./bin/compress '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.our'" \
-    "./bin/decompress '$TEMP_DIR/${BASENAME}.our' '$TEMP_DIR/${BASENAME}.decompressed'" \
-    "$TEMP_DIR/${BASENAME}.our"
+benchmark "G07 Compressor" \
+    "./bin/compress '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.g07'" \
+    "./bin/decompress '$TEMP_DIR/${BASENAME}.g07' '$TEMP_DIR/${BASENAME}.decompressed'" \
+    "$TEMP_DIR/${BASENAME}.g07"
 
 # gzip
 benchmark "gzip" \

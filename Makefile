@@ -11,7 +11,7 @@ OBJ_DIR = obj
 BIN_DIR = bin
 
 # Source files
-ARITHMETIC_SRC = $(SRC_DIR)/arithmetic/arithmetic_coder.cpp
+RANGE_SRC = $(SRC_DIR)/arithmetic/range_coder.cpp
 MODEL_SRC = $(SRC_DIR)/model/frequency_model.cpp
 CONTEXT_SRC = $(SRC_DIR)/model/context_model.cpp
 UTILS_SRC = $(SRC_DIR)/utils/file_io.cpp
@@ -20,7 +20,7 @@ COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
 DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
 
 # Object files
-ARITHMETIC_OBJ = $(OBJ_DIR)/arithmetic_coder.o
+RANGE_OBJ = $(OBJ_DIR)/range_coder.o
 MODEL_OBJ = $(OBJ_DIR)/frequency_model.o
 CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
 UTILS_OBJ = $(OBJ_DIR)/file_io.o
@@ -29,7 +29,7 @@ COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
 DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
 
 # Common objects (used by both compressor and decompressor)
-COMMON_OBJS = $(ARITHMETIC_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ)
+COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ)
 
 # Executables
 COMPRESSOR = $(BIN_DIR)/compress
@@ -48,7 +48,7 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 # Compile object files
-$(ARITHMETIC_OBJ): $(ARITHMETIC_SRC) | $(OBJ_DIR)
+$(RANGE_OBJ): $(RANGE_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(MODEL_OBJ): $(MODEL_SRC) | $(OBJ_DIR)

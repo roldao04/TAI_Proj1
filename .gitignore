@@ -6,6 +6,4 @@ bin/
 obj/
 
 # Generated benchmark results
-benchmarks/results.csv
-benchmarks/results.md
 benchmarks/tmp/

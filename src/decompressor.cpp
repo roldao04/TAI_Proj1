@@ -1,7 +1,7 @@
 #include <iostream>
 #include <chrono>
 #include <array>
-#include "arithmetic/arithmetic_coder.h"
+#include "arithmetic/range_coder.h"
 #include "model/frequency_model.h"
 #include "model/context_model.h"
 #include "utils/file_io.h"
@@ -88,7 +88,7 @@ int main(int argc, char* argv[]) {
 
             // Decode data
             std::cout << "Decoding with Order-0 model..." << std::endl;
-            ArithmeticDecoder decoder(encoded_data);
+            RangeDecoder decoder(encoded_data);
 
             while (output_data.size() < original_size) {
                 uint32_t cum_freq = decoder.get_current_count(model.get_total_freq());
@@ -118,7 +118,7 @@ int main(int argc, char* argv[]) {
 
             // Extract encoded data (starts right after size header)
             std::vector<uint8_t> encoded_data(compressed_data.begin() + 9, compressed_data.end());
-            ArithmeticDecoder decoder(encoded_data);
+            RangeDecoder decoder(encoded_data);
 
             while (output_data.size() < original_size) {
                 // PPM Method C: Track exclusions (must match encoder exactly!)

@@ -2,7 +2,7 @@
 #include <chrono>
 #include <string>
 #include <cstring>
-#include "arithmetic/arithmetic_coder.h"
+#include "arithmetic/range_coder.h"
 #include "model/frequency_model.h"
 #include "model/context_model.h"
 #include "utils/file_io.h"
@@ -42,8 +42,8 @@ void print_usage(const char* program_name) {
     std::cerr << "\nAuto-selection rules:" << std::endl;
     std::cerr << "  Entropy > 7.5 bits/symbol → Store uncompressed (already compressed)" << std::endl;
     std::cerr << "  File < 10KB  → Order-0 (avoid adaptive overhead)" << std::endl;
-    std::cerr << "  File < 100KB → Order-1 (avoid context dilution)" << std::endl;
-    std::cerr << "  File >= 100KB + entropy < 7.0 → Order-2 (exploit long-range patterns)" << std::endl;
+    std::cerr << "  File >= 10KB → Order-1 (adaptive context model)" << std::endl;
+    std::cerr << "  Note: Order-2 currently disabled due to decompression performance" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -103,27 +103,15 @@ int main(int argc, char* argv[]) {
             double entropy = EntropyCalculator::calculate(input_data, 8192);
             std::cout << "Detected entropy: " << entropy << " bits/symbol" << std::endl;
 
-            // Decision logic
+            // Decision logic - TEMPORARY: Force Order-0 only for speed testing
             if (entropy > 7.5) {
                 // Incompressible data (random, encrypted, already compressed)
                 model_type = ModelType::UNCOMPRESSED;
                 std::cout << "Decision: Store UNCOMPRESSED (entropy too high)" << std::endl;
-            } else if (input_data.size() < 10240) {
-                // Small files: Order-0 (adaptive overhead not worth it)
-                model_type = ModelType::ORDER_0;
-                std::cout << "Decision: Order-0 (small file, avoid adaptive overhead)" << std::endl;
-            } else if (input_data.size() < 102400) {
-                // Medium files: Order-1 (avoid Order-2 context dilution)
-                model_type = ModelType::ORDER_1;
-                std::cout << "Decision: Order-1 (medium file size)" << std::endl;
-            } else if (entropy < 7.0) {
-                // Large compressible files: Order-2 (full PPM power)
-                model_type = ModelType::ORDER_2;
-                std::cout << "Decision: Order-2 adaptive (large file, good entropy)" << std::endl;
             } else {
-                // Large files with moderate entropy: Order-1 is safer
-                model_type = ModelType::ORDER_1;
-                std::cout << "Decision: Order-1 (moderate entropy)" << std::endl;
+                // Force Order-0 for all compressible data (fast!)
+                model_type = ModelType::ORDER_0;
+                std::cout << "Decision: Order-0 (forced for speed testing)" << std::endl;
             }
         } else {
             std::cout << "Using user-specified model" << std::endl;
@@ -149,7 +137,7 @@ int main(int argc, char* argv[]) {
 
             // Encode data
             std::cout << "Encoding..." << std::endl;
-            ArithmeticEncoder encoder;
+            RangeEncoder encoder;
 
             for (uint8_t byte : input_data) {
                 uint32_t cum_freq_low, cum_freq_high;
@@ -189,7 +177,7 @@ int main(int argc, char* argv[]) {
 
             // Encode data
             std::cout << "Encoding with adaptive context model..." << std::endl;
-            ArithmeticEncoder encoder;
+            RangeEncoder encoder;
 
             for (size_t idx = 0; idx < input_data.size(); idx++) {
                 uint8_t byte = input_data[idx];

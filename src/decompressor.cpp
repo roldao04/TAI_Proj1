@@ -3,17 +3,23 @@
 #include <array>
 #include "arithmetic/arithmetic_coder.h"
 #include "model/frequency_model.h"
+#include "model/context_model.h"
 #include "utils/file_io.h"
 
 /*
  * Lossless Data Decompressor
  *
- * Reverses the compression process:
- * - Reads compressed file
- * - Extracts frequency model
- * - Decodes arithmetic coded data
- * - Reconstructs original file
+ * Supports multiple compression models:
+ * - Order-0: Simple frequency model (reads model from header)
+ * - Order-2: Adaptive context model (builds model during decompression)
  */
+
+enum class ModelType {
+    ORDER_0 = 0,
+    ORDER_1 = 1,
+    ORDER_2 = 2,
+    UNCOMPRESSED = 255
+};
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
@@ -32,54 +38,181 @@ int main(int argc, char* argv[]) {
         std::vector<uint8_t> compressed_data = FileIO::read_file(input_filename);
         std::cout << "Compressed size: " << compressed_data.size() << " bytes" << std::endl;
 
-        if (compressed_data.size() < 8 + 257 * 4) {
+        if (compressed_data.size() < 9) {  // At least model type + original size
             throw std::runtime_error("Invalid compressed file: too small");
         }
+
+        // Read model type (1 byte)
+        ModelType model_type = static_cast<ModelType>(compressed_data[0]);
+        std::string model_name;
+        if (model_type == ModelType::ORDER_0) model_name = "Order-0";
+        else if (model_type == ModelType::ORDER_1) model_name = "Order-1";
+        else if (model_type == ModelType::ORDER_2) model_name = "Order-2";
+        else if (model_type == ModelType::UNCOMPRESSED) model_name = "Uncompressed";
+        else model_name = "Unknown";
+        std::cout << "Model type: " << model_name << std::endl;
 
         // Read original file size (8 bytes)
         uint64_t original_size = 0;
         for (int i = 0; i < 8; i++) {
-            original_size |= (uint64_t)compressed_data[i] << (i * 8);
+            original_size |= (uint64_t)compressed_data[1 + i] << (i * 8);
         }
         std::cout << "Original size: " << original_size << " bytes" << std::endl;
 
-        // Read frequency table (257 * 4 bytes)
-        std::array<uint32_t, 257> frequencies;
-        size_t offset = 8;
-        for (int i = 0; i < 257; i++) {
-            uint32_t freq = 0;
-            for (int j = 0; j < 4; j++) {
-                freq |= (uint32_t)compressed_data[offset++] << (j * 8);
-            }
-            frequencies[i] = freq;
-        }
-
-        // Build frequency model
-        FrequencyModel model;
-        model.set_frequencies(frequencies);
-
-        // Extract encoded data
-        std::vector<uint8_t> encoded_data(compressed_data.begin() + offset, compressed_data.end());
-
-        // Decode data
-        std::cout << "Decoding..." << std::endl;
-        ArithmeticDecoder decoder(encoded_data);
         std::vector<uint8_t> output_data;
         output_data.reserve(original_size);
 
-        while (output_data.size() < original_size) {
-            uint32_t cum_freq = decoder.get_current_count(model.get_total_freq());
-            int symbol = model.find_symbol(cum_freq);
-
-            if (symbol == FrequencyModel::get_eof_symbol()) {
-                break;
+        if (model_type == ModelType::ORDER_0) {
+            // Order-0: Read frequency table from header
+            if (compressed_data.size() < 9 + 257 * 4) {
+                throw std::runtime_error("Invalid Order-0 compressed file: header too small");
             }
 
-            output_data.push_back(static_cast<uint8_t>(symbol));
+            // Read frequency table (257 * 4 bytes)
+            std::array<uint32_t, 257> frequencies;
+            size_t offset = 9;
+            for (int i = 0; i < 257; i++) {
+                uint32_t freq = 0;
+                for (int j = 0; j < 4; j++) {
+                    freq |= (uint32_t)compressed_data[offset++] << (j * 8);
+                }
+                frequencies[i] = freq;
+            }
 
-            uint32_t cum_freq_low, cum_freq_high;
-            model.get_symbol_range(symbol, cum_freq_low, cum_freq_high);
-            decoder.decode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+            // Build frequency model
+            FrequencyModel model;
+            model.set_frequencies(frequencies);
+
+            // Extract encoded data
+            std::vector<uint8_t> encoded_data(compressed_data.begin() + offset, compressed_data.end());
+
+            // Decode data
+            std::cout << "Decoding with Order-0 model..." << std::endl;
+            ArithmeticDecoder decoder(encoded_data);
+
+            while (output_data.size() < original_size) {
+                uint32_t cum_freq = decoder.get_current_count(model.get_total_freq());
+                int symbol = model.find_symbol(cum_freq);
+
+                if (symbol == FrequencyModel::get_eof_symbol()) {
+                    break;
+                }
+
+                output_data.push_back(static_cast<uint8_t>(symbol));
+
+                uint32_t cum_freq_low, cum_freq_high;
+                model.get_symbol_range(symbol, cum_freq_low, cum_freq_high);
+                decoder.decode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+            }
+
+        } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2) {
+            // Order-1/2 adaptive: No header, build model during decompression
+            std::string model_name = (model_type == ModelType::ORDER_1) ? "Order-1" : "Order-2";
+            std::cout << "Decoding with adaptive " << model_name << " context model..." << std::endl;
+
+            // Initialize adaptive model with warm start (MUST match encoder!)
+            // We need to decode first, then warm start
+            // For now, use simple init - warmup will happen as we decode
+            ContextModel model;
+            model.init_adaptive();
+
+            // Extract encoded data (starts right after size header)
+            std::vector<uint8_t> encoded_data(compressed_data.begin() + 9, compressed_data.end());
+            ArithmeticDecoder decoder(encoded_data);
+
+            while (output_data.size() < original_size) {
+                // PPM Method C: Track exclusions (must match encoder exactly!)
+                std::vector<int> excluded_symbols;
+
+                // Determine starting order based on history (must match encoder logic!)
+                int current_order = (model.get_history_size() >= 2) ? 2 :
+                                   (model.get_history_size() >= 1) ? 1 : 0;
+
+                uint8_t decoded_byte = 0;
+                bool symbol_found = false;
+
+                // Try decoding with escape mechanism (matches encoder's logic with exclusions)
+                while (current_order >= 0 && !symbol_found) {
+                    // Get current context total frequency
+                    // If we have exclusions, use excluded total; otherwise use full total
+                    uint32_t total_freq;
+
+                    if (!excluded_symbols.empty()) {
+                        total_freq = model.get_total_freq_with_exclusions(current_order, excluded_symbols);
+                    } else {
+                        total_freq = model.get_total_freq(current_order);
+                    }
+
+                    if (total_freq == 0) {
+                        // Context doesn't exist yet, fall back to Order-0 (match encoder behavior!)
+                        current_order = 0;
+                        continue;
+                    }
+
+                    // Decode symbol from this order
+                    uint32_t cum_freq = decoder.get_current_count(total_freq);
+                    int symbol;
+
+                    if (!excluded_symbols.empty()) {
+                        symbol = model.find_symbol_with_exclusions(current_order, cum_freq, excluded_symbols);
+                    } else {
+                        symbol = model.find_symbol(current_order, cum_freq);
+                    }
+
+                    if (symbol < 0) {
+                        throw std::runtime_error("Failed to find symbol during decompression");
+                    }
+
+                    if (symbol == 256) {  // ESCAPE_SYMBOL
+                        // Decode the escape
+                        uint32_t cum_freq_low, cum_freq_high, total;
+                        model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
+                        decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
+
+                        // PPM Method C: After decoding escape, add all symbols from this context to exclusion list
+                        std::vector<int> ctx_symbols = model.get_context_symbols(current_order);
+                        for (int sym : ctx_symbols) {
+                            excluded_symbols.push_back(sym);
+                        }
+
+                        // Go to lower order
+                        current_order--;
+                    } else {
+                        // Found actual symbol - decode it WITH exclusions if any
+                        uint32_t cum_freq_low, cum_freq_high, total;
+
+                        if (excluded_symbols.empty()) {
+                            model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
+                        } else {
+                            model.get_symbol_range_with_exclusions(current_order, symbol, excluded_symbols,
+                                                                  cum_freq_low, cum_freq_high, total);
+                        }
+
+                        decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
+
+                        decoded_byte = static_cast<uint8_t>(symbol);
+                        symbol_found = true;
+                    }
+                }
+
+                if (!symbol_found) {
+                    throw std::runtime_error("Failed to decode symbol");
+                }
+
+                output_data.push_back(decoded_byte);
+
+                // Update model adaptively (CRITICAL: must match encoder exactly!)
+                model.update_frequencies(decoded_byte);
+                model.update_history(decoded_byte);
+            }
+        } else if (model_type == ModelType::UNCOMPRESSED) {
+            // Uncompressed: just copy data directly
+            std::cout << "Copying uncompressed data..." << std::endl;
+            output_data.insert(output_data.end(),
+                             compressed_data.begin() + 9,
+                             compressed_data.end());
+        } else {
+            throw std::runtime_error("Unknown model type");
         }
 
         // Verify size

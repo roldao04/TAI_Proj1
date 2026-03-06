@@ -16,6 +16,7 @@ MODEL_SRC = $(SRC_DIR)/model/frequency_model.cpp
 CONTEXT_SRC = $(SRC_DIR)/model/context_model.cpp
 UTILS_SRC = $(SRC_DIR)/utils/file_io.cpp
 ENTROPY_SRC = $(SRC_DIR)/utils/entropy_calculator.cpp
+BWT_SRC = $(SRC_DIR)/transform/bwt.cpp
 COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
 DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
 
@@ -25,15 +26,17 @@ MODEL_OBJ = $(OBJ_DIR)/frequency_model.o
 CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
 UTILS_OBJ = $(OBJ_DIR)/file_io.o
 ENTROPY_OBJ = $(OBJ_DIR)/entropy_calculator.o
+BWT_OBJ = $(OBJ_DIR)/bwt.o
 COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
 DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
 
 # Common objects (used by both compressor and decompressor)
-COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ)
+COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ)
 
 # Executables
 COMPRESSOR = $(BIN_DIR)/compress
 DECOMPRESSOR = $(BIN_DIR)/decompress
+TEST_BWT = $(BIN_DIR)/test_bwt
 
 # Targets
 .PHONY: all clean test benchmark
@@ -63,6 +66,9 @@ $(UTILS_OBJ): $(UTILS_SRC) | $(OBJ_DIR)
 $(ENTROPY_OBJ): $(ENTROPY_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(BWT_OBJ): $(BWT_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 $(COMPRESSOR_OBJ): $(COMPRESSOR_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -76,13 +82,20 @@ $(COMPRESSOR): $(COMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
 $(DECOMPRESSOR): $(DECOMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
+# Test executable
+$(TEST_BWT): tests/test_bwt.cpp $(BWT_OBJ) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Clean build artifacts
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-# Run simple test
-test: $(COMPRESSOR) $(DECOMPRESSOR)
-	@echo "Running verification test..."
+# Run tests
+test: $(COMPRESSOR) $(DECOMPRESSOR) $(TEST_BWT)
+	@echo "Running BWT unit tests..."
+	@$(TEST_BWT)
+	@echo ""
+	@echo "Running integration test..."
 	@bash tests/verify_lossless.sh
 
 # Run comprehensive benchmark on all data files

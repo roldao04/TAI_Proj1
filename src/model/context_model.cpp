@@ -3,7 +3,6 @@
 #include <stdexcept>
 #include <iostream>
 
-// Define static constants
 const int ContextModel::ALPHABET_SIZE;
 const int ContextModel::ESCAPE_SYMBOL;
 const int ContextModel::EOF_SYMBOL;
@@ -12,7 +11,7 @@ const int ContextModel::MAX_ORDER;
 
 ContextModel::ContextModel() {
     order0_context = std::make_unique<Context>();
-    encoding_method_ = EncodingMethod::SIMPLE;  // Default to simple mode for speed
+    encoding_method_ = EncodingMethod::SIMPLE;
     reset();
 }
 
@@ -38,19 +37,16 @@ ContextModel::Context* ContextModel::get_context(int order) {
         uint32_t ctx_id = get_context_id_order1();
         return order1_contexts[ctx_id].get();
     }
-    // Order-2 removed - no benefit over Order-1
     return nullptr;
 }
 
 void ContextModel::ensure_context_exists(int order) {
     if (order == 0) {
-        // Order-0 always exists
         return;
     } else if (order == 1) {
         if (history.size() < 1) return;
         uint32_t ctx_id = get_context_id_order1();
         if (!order1_contexts[ctx_id]) {
-            // Lazy context creation threshold: only create if context byte seen enough times
             uint8_t context_byte = history[history.size() - 1];
             if (order0_context->frequencies.find(context_byte) != order0_context->frequencies.end() &&
                 order0_context->frequencies[context_byte] >= 3) {
@@ -58,47 +54,39 @@ void ContextModel::ensure_context_exists(int order) {
             }
         }
     }
-    // Order-2 removed - no benefit over Order-1
 }
 
 void ContextModel::init_adaptive() {
-    // Initialize Order-0 with all symbols having frequency 1 (uniform prior)
     for (int i = 0; i < ALPHABET_SIZE; i++) {
         order0_context->frequencies[i] = 1;
     }
     order0_context->frequencies[EOF_SYMBOL] = 1;
     order0_context->total_freq = ALPHABET_SIZE + 1;
-    order0_context->invalidate_cache();  // Mark cache as dirty
+    order0_context->invalidate_cache();
 
-    // Reset history
     reset();
 
-    // Log initialization mode
     std::cout << "Adaptive context model initialized (";
     std::cout << (encoding_method_ == EncodingMethod::SIMPLE ? "Simple" : "PPM Method C");
     std::cout << " mode)" << std::endl;
 }
 
 void ContextModel::init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size) {
-    // Initialize Order-0 with small base frequency for unseen symbols
     for (int i = 0; i < ALPHABET_SIZE; i++) {
         order0_context->frequencies[i] = 1;
     }
     order0_context->frequencies[EOF_SYMBOL] = 1;
     order0_context->total_freq = ALPHABET_SIZE + 1;
 
-    // Warm start: scan first warmup_size bytes to build better priors
     size_t scan_size = std::min(warmup_size, data.size());
 
     for (size_t i = 0; i < scan_size; i++) {
         uint8_t byte = data[i];
-        order0_context->frequencies[byte] += 2;  // Weight warmup samples higher
+        order0_context->frequencies[byte] += 2;
         order0_context->total_freq += 2;
     }
 
     order0_context->invalidate_cache();
-
-    // Reset history
     reset();
 
     std::cout << "Adaptive context model initialized with " << scan_size
@@ -106,23 +94,17 @@ void ContextModel::init_adaptive_with_warmup(const std::vector<uint8_t>& data, s
 }
 
 void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
-    // Initialize Order-0 with all symbols having frequency 1
     for (int i = 0; i < ALPHABET_SIZE; i++) {
         order0_context->frequencies[i] = 1;
     }
     order0_context->frequencies[EOF_SYMBOL] = 1;
     order0_context->total_freq = ALPHABET_SIZE + 1;
 
-    // Reset history
     reset();
 
-    // Pass 1: Count frequencies in all contexts
     for (size_t i = 0; i < data.size(); i++) {
         uint8_t byte = data[i];
 
-        // Order-2 removed - no benefit over Order-1
-
-        // Update Order-1 context
         if (history.size() >= 1) {
             ensure_context_exists(1);
             ContextModel::Context* ctx = get_context(1);
@@ -135,37 +117,25 @@ void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
             }
         }
 
-        // Update Order-0 context (already initialized)
         if (order0_context->frequencies.find(byte) != order0_context->frequencies.end()) {
             order0_context->frequencies[byte]++;
             order0_context->total_freq++;
         }
 
-        // Update history
         update_history(byte);
     }
 
-    // Add escape symbols to all contexts that have seen symbols
-    // Escape frequency based on context size (more symbols = higher escape probability)
-
-    // Order-2 removed - no benefit over Order-1
-
-    // Order-1 contexts
     for (auto& ctx_ptr : order1_contexts) {
         if (ctx_ptr && ctx_ptr->frequencies.size() > 0) {
             int unique_symbols = ctx_ptr->frequencies.size();
-            // Escape frequency = unique_symbols / 4, minimum 1
             uint32_t escape_freq = std::max(1, unique_symbols / 4);
             ctx_ptr->frequencies[ESCAPE_SYMBOL] = escape_freq;
             ctx_ptr->total_freq += escape_freq;
-            ctx_ptr->invalidate_cache();  // Mark cache as dirty
+            ctx_ptr->invalidate_cache();
         }
     }
 
-    // Order-0 context
     order0_context->invalidate_cache();
-
-    // Reset history for encoding/decoding
     reset();
 
     std::cout << "Context model built successfully" << std::endl;
@@ -173,11 +143,7 @@ void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
 }
 
 void ContextModel::update_history(uint8_t byte) {
-    // Phase 2.2 Optimization: Use efficient history management
     if (history.size() >= MAX_ORDER) {
-        // Rotate left: shift all elements left by 1, then set last element
-        // This is O(n) but better than erase which reallocates
-        // Alternative: std::rotate for cleaner code
         std::rotate(history.begin(), history.begin() + 1, history.end());
         history[MAX_ORDER - 1] = byte;
     } else {
@@ -186,54 +152,39 @@ void ContextModel::update_history(uint8_t byte) {
 }
 
 void ContextModel::update_frequencies(uint8_t byte) {
-    // In adaptive PPM, we update ALL context levels after encoding/decoding
-    // This ensures both encoder and decoder build the same model
+    int max_order = (history.size() >= 1) ? 1 : 0;
 
-    // Determine which contexts we should update based on current history
-    // NOTE: Order-2 disabled - no benefit over Order-1, adds complexity
-    int max_order = (history.size() >= 1) ? 1 : 0;  // Was: >= 2 ? 2 : ...
-
-    // Update from highest order down to Order-0
     for (int order = max_order; order >= 0; order--) {
         if (order == 0) {
-            // Order-0: Always exists and always update
             order0_context->frequencies[byte]++;
             order0_context->total_freq++;
-            order0_context->invalidate_cache();  // Mark cache as dirty
+            order0_context->invalidate_cache();
         } else {
-            // Higher orders: ensure context exists, then update
             ensure_context_exists(order);
             ContextModel::Context* ctx = get_context(order);
 
             if (ctx) {
-                // If symbol not in context, add it
                 if (ctx->frequencies.find(byte) == ctx->frequencies.end()) {
-                    ctx->frequencies[byte] = 1;  // Start with 1
+                    ctx->frequencies[byte] = 1;
                     ctx->total_freq += 1;
 
-                    // Ensure escape exists, and update its frequency adaptively
                     if (ctx->frequencies.find(ESCAPE_SYMBOL) == ctx->frequencies.end()) {
-                        // First time creating escape: set to 1
                         ctx->frequencies[ESCAPE_SYMBOL] = 1;
                         ctx->total_freq += 1;
                     } else {
-                        // Update escape frequency based on context diversity
-                        // More unique symbols = higher escape probability
-                        int unique_symbols = ctx->frequencies.size() - 1;  // -1 for escape itself
+                        int unique_symbols = ctx->frequencies.size() - 1;
                         uint32_t new_escape_freq = std::max(1, unique_symbols / 4);
                         uint32_t old_escape_freq = ctx->frequencies[ESCAPE_SYMBOL];
 
-                        // Adjust total and escape frequency
                         ctx->total_freq = ctx->total_freq - old_escape_freq + new_escape_freq;
                         ctx->frequencies[ESCAPE_SYMBOL] = new_escape_freq;
                     }
                 } else {
-                    // Symbol already exists, just increment
                     ctx->frequencies[byte]++;
                     ctx->total_freq++;
                 }
 
-                ctx->invalidate_cache();  // Mark cache as dirty after any update
+                ctx->invalidate_cache();
             }
         }
     }
@@ -248,36 +199,29 @@ std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol(uint8_t byte
     }
 }
 
-// NEW: Simplified encoding without exclusions (SRP: single responsibility)
+// Simplified encoding without exclusions
 std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_simple(uint8_t byte) {
     std::vector<EncodingStep> steps;
 
-    // Determine maximum order based on history
     int current_order = std::min(static_cast<int>(history.size()), MAX_ORDER);
 
-    // For Phase 1, only use Order-1 (skip Order-2 for simplicity and speed)
     if (current_order > 1) {
         current_order = 1;
     }
 
-    // Try encoding from highest to lowest order
     while (current_order >= 0) {
         Context* ctx = get_context(current_order);
 
-        // Check if context exists and has the symbol
         if (ctx && ctx->has_symbol(byte)) {
-            // Symbol found - encode it directly (no exclusions!)
             EncodingStep step;
             step.symbol = byte;
             get_symbol_range(current_order, byte,
                            step.cum_freq_low, step.cum_freq_high, step.total_freq);
             steps.push_back(step);
-            return steps;  // Done!
+            return steps;
         }
 
-        // Symbol not found in this context
         if (current_order > 0 && ctx) {
-            // Encode escape symbol to fall back to lower order
             EncodingStep escape_step;
             escape_step.symbol = ESCAPE_SYMBOL;
             get_symbol_range(current_order, ESCAPE_SYMBOL,
@@ -286,11 +230,9 @@ std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_simple(uint8
             steps.push_back(escape_step);
         }
 
-        // Move to lower order
         current_order--;
     }
 
-    // If we reach here, encode from Order-0 (guaranteed to have all symbols)
     EncodingStep step;
     step.symbol = byte;
     get_symbol_range(0, byte,
@@ -476,13 +418,11 @@ uint32_t ContextModel::get_total_freq(int order) const {
 void ContextModel::print_statistics() const {
     std::cout << "=== Context Model Statistics ===" << std::endl;
 
-    // Count non-empty contexts
     int order1_count = 0;
     for (const auto& ctx : order1_contexts) {
         if (ctx && ctx->frequencies.size() > 0) order1_count++;
     }
 
-    // Order-2 removed - no benefit over Order-1
     std::cout << "Order-1 contexts: " << order1_count << " / 256" << std::endl;
     std::cout << "Order-0 symbols: " << order0_context->frequencies.size() << std::endl;
 }

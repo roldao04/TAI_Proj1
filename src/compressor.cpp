@@ -7,37 +7,38 @@
 #include "model/context_model.h"
 #include "utils/file_io.h"
 #include "utils/entropy_calculator.h"
+#include "transform/bwt.h"
 
 /*
  * Lossless Data Compressor
  *
- * Supports multiple compression models:
- * - Order-0: Simple frequency model (default, backward compatible)
- * - Order-2: Context-based model using previous 2 bytes
- *
- * Usage:
- *   ./compress <input_file> <output_file> [--model order0|order2]
- *
  * Compressed file format:
- * - Model type (1 byte): 0 = Order-0, 2 = Order-2
+ * - Model type (1 byte): 0=Order-0, 1=Order-1, 3/4=BWT variants, 255=Uncompressed
  * - Original file size (8 bytes, uint64_t)
- * - Model data (varies by model type)
- * - Arithmetic coded data
+ * - BWT header (if BWT enabled): block count + primary indices
+ * - Model data (Order-0 only: frequency table)
+ * - Range-coded data
  */
 
 enum class ModelType {
     ORDER_0 = 0,
     ORDER_1 = 1,
     ORDER_2 = 2,
-    UNCOMPRESSED = 255  // Store uncompressed for incompressible data
+    ORDER_0_BWT = 3,
+    ORDER_1_BWT = 4,
+    UNCOMPRESSED = 255
 };
 
 void print_usage(const char* program_name) {
-    std::cerr << "Usage: " << program_name << " <input_file> <output_file> [--model order0|order1|auto] [--yes]" << std::endl;
-    std::cerr << "\nOptions:" << std::endl;
+    std::cerr << "Usage: " << program_name << " <input_file> <output_file> [OPTIONS]" << std::endl;
+    std::cerr << "\nModel Options:" << std::endl;
     std::cerr << "  --model auto      Auto-select best model based on file analysis (default)" << std::endl;
     std::cerr << "  --model order0    Force Order-0 frequency model (fast, universal)" << std::endl;
     std::cerr << "  --model order1    Force Order-1 adaptive model (best compression for low-entropy data)" << std::endl;
+    std::cerr << "\nBWT Preprocessing:" << std::endl;
+    std::cerr << "  --bwt             Force BWT preprocessing (improves compression on structured data)" << std::endl;
+    std::cerr << "  --no-bwt          Disable BWT preprocessing (default: auto-decided)" << std::endl;
+    std::cerr << "\nOther Options:" << std::endl;
     std::cerr << "  --yes, -y         Skip interactive prompts (useful for automation/benchmarks)" << std::endl;
     std::cerr << "\nAuto-selection rules (based on benchmark results):" << std::endl;
     std::cerr << "  Entropy > 7.5 → UNCOMPRESSED (incompressible, e.g., already compressed)" << std::endl;
@@ -58,39 +59,42 @@ int main(int argc, char* argv[]) {
     std::string input_filename = argv[1];
     std::string output_filename = argv[2];
 
-    // Default: auto-select based on file size (will be determined after reading file)
     ModelType model_type = ModelType::ORDER_0;
-    bool auto_select = true;  // Automatic model selection by default
-    bool force_mode = false;   // Skip interactive prompts (for automation/benchmarks)
+    bool auto_select = true;
+    bool force_mode = false;
+    int bwt_preference = 0;
 
-    // Parse optional arguments
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];
 
         if (arg == "--yes" || arg == "-y") {
             force_mode = true;
+        } else if (arg == "--bwt") {
+            bwt_preference = 1;
+        } else if (arg == "--no-bwt") {
+            bwt_preference = -1;
         } else if (arg == "--model") {
             if (i + 1 < argc) {
                 std::string model_name = argv[i + 1];
                 if (model_name == "order0") {
                     model_type = ModelType::ORDER_0;
-                    auto_select = false;  // User override
+                    auto_select = false;
                 } else if (model_name == "order1") {
                     model_type = ModelType::ORDER_1;
-                    auto_select = false;  // User override
+                    auto_select = false;
                 } else if (model_name == "order2") {
                     std::cerr << "Error: Order-2 has been removed (provided no benefit over Order-1)" << std::endl;
                     std::cerr << "       Benchmark results showed identical compression ratios with worse performance" << std::endl;
                     std::cerr << "       Use --model order1 instead, or --model auto for automatic selection" << std::endl;
                     return 1;
                 } else if (model_name == "auto") {
-                    auto_select = true;  // Explicitly request auto-selection
+                    auto_select = true;
                 } else {
                     std::cerr << "Error: Unknown model type '" << model_name << "'" << std::endl;
                     print_usage(argv[0]);
                     return 1;
                 }
-                i++;  // Skip next argument (model name)
+                i++;
             } else {
                 std::cerr << "Error: --model requires an argument (order0, order1, or auto)" << std::endl;
                 print_usage(argv[0]);
@@ -102,39 +106,24 @@ int main(int argc, char* argv[]) {
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
 
-        // Read input file
         std::cout << "Reading input file: " << input_filename << std::endl;
         std::vector<uint8_t> input_data = FileIO::read_file(input_filename);
         std::cout << "Input size: " << input_data.size() << " bytes" << std::endl;
 
-        // Smart model selection based on entropy and file size
         if (auto_select) {
-            // Calculate entropy to detect compressibility
             double entropy = EntropyCalculator::calculate(input_data, 8192);
             std::cout << "Detected entropy: " << entropy << " bits/symbol" << std::endl;
 
-            // Decision logic (Improved based on benchmark results)
             if (entropy > 7.5) {
-                // Incompressible data (File D: entropy ~8.0, expands to 102%)
-                // Better to store uncompressed
                 model_type = ModelType::UNCOMPRESSED;
                 std::cout << "Decision: UNCOMPRESSED (entropy " << entropy << " > 7.5, incompressible)" << std::endl;
-
             } else if (entropy > 6.8) {
-                // High entropy files (Files E, F: entropy ~7.0-7.3, ratio ~87-88%)
-                // Order-1 is very slow (14-18s) and doesn't compress much better
-                // Order-0 achieves similar ratio in milliseconds
                 model_type = ModelType::ORDER_0;
                 std::cout << "Decision: Order-0 (high entropy " << entropy << " > 6.8, marginal compression benefit)" << std::endl;
-
-            } else if (input_data.size() < 102400) {  // < 100KB
-                // Small files: Order-0 is faster and header overhead matters
+            } else if (input_data.size() < 102400) {
                 model_type = ModelType::ORDER_0;
                 std::cout << "Decision: Order-0 (small file < 100KB)" << std::endl;
-
             } else {
-                // Low entropy, large files: Order-1 shines! (Files A, B, C, G, H)
-                // Achieves 20-50% better compression than Order-0
                 model_type = ModelType::ORDER_1;
                 std::cout << "Decision: Order-1 (entropy " << entropy << " < 6.8, good compression expected)" << std::endl;
             }
@@ -142,7 +131,6 @@ int main(int argc, char* argv[]) {
             std::cout << "Using user-specified model" << std::endl;
         }
 
-        // Safety check: warn if Order-1 manually selected for high-entropy data
         if (!auto_select && model_type == ModelType::ORDER_1) {
             double entropy = EntropyCalculator::calculate(input_data, 8192);
             if (entropy > 6.8) {
@@ -155,7 +143,6 @@ int main(int argc, char* argv[]) {
                     std::cerr << "    --yes flag detected: Proceeding with Order-1 despite warning" << std::endl;
                 } else {
                     std::cerr << "\nContinue with Order-1 anyway? (y/N): ";
-
                     char response;
                     std::cin >> response;
                     if (response != 'y' && response != 'Y') {
@@ -166,35 +153,85 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        bool use_bwt = false;
+        std::vector<uint32_t> bwt_primary_indices;
+
+        if (model_type != ModelType::UNCOMPRESSED) {
+            if (bwt_preference == 1) {
+                use_bwt = true;
+                std::cout << "BWT preprocessing: ENABLED (user requested --bwt)" << std::endl;
+            } else if (bwt_preference == -1) {
+                use_bwt = false;
+                std::cout << "BWT preprocessing: DISABLED (user requested --no-bwt)" << std::endl;
+            } else {
+                double entropy = EntropyCalculator::calculate(input_data, 8192);
+                if (entropy < 6.5 && input_data.size() > 10240) {
+                    use_bwt = true;
+                    std::cout << "BWT preprocessing: ENABLED (entropy " << entropy << " < 6.5, structured data expected)" << std::endl;
+                } else {
+                    use_bwt = false;
+                    std::cout << "BWT preprocessing: DISABLED (entropy " << entropy << " or size not suitable)" << std::endl;
+                }
+            }
+
+            if (use_bwt) {
+                if (model_type == ModelType::ORDER_0) {
+                    model_type = ModelType::ORDER_0_BWT;
+                } else if (model_type == ModelType::ORDER_1) {
+                    model_type = ModelType::ORDER_1_BWT;
+                }
+            }
+        }
+
         std::vector<uint8_t> output_data;
 
-        // Write model type marker (1 byte)
         output_data.push_back(static_cast<uint8_t>(model_type));
 
-        // Write original file size (8 bytes)
         uint64_t original_size = input_data.size();
         for (int i = 0; i < 8; i++) {
             output_data.push_back((original_size >> (i * 8)) & 0xFF);
         }
 
-        if (model_type == ModelType::ORDER_0) {
+        std::vector<uint8_t> data_to_encode = input_data;
+
+        if (use_bwt) {
+            std::cout << "Applying BWT preprocessing..." << std::endl;
+            auto start_bwt = std::chrono::high_resolution_clock::now();
+
+            auto [bwt_output, primary_indices] = BWT::transform_blocks(input_data, 900*1024);
+            data_to_encode = bwt_output;
+            bwt_primary_indices = primary_indices;
+
+            auto end_bwt = std::chrono::high_resolution_clock::now();
+            auto bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_bwt - start_bwt).count();
+            std::cout << "BWT preprocessing complete (" << bwt_time << " ms)" << std::endl;
+            std::cout << "Number of BWT blocks: " << bwt_primary_indices.size() << std::endl;
+
+            uint32_t block_count = bwt_primary_indices.size();
+            for (int i = 0; i < 4; i++) {
+                output_data.push_back((block_count >> (i * 8)) & 0xFF);
+            }
+            for (uint32_t idx : bwt_primary_indices) {
+                for (int i = 0; i < 4; i++) {
+                    output_data.push_back((idx >> (i * 8)) & 0xFF);
+                }
+            }
+        }
+
+        if (model_type == ModelType::ORDER_0 || model_type == ModelType::ORDER_0_BWT) {
             std::cout << "Using Order-0 frequency model..." << std::endl;
-
-            // Build frequency model
-            FrequencyModel model;
-            model.build_from_data(input_data);
-
-            // Encode data
             std::cout << "Encoding..." << std::endl;
-            RangeEncoder encoder;
 
-            for (uint8_t byte : input_data) {
+            FrequencyModel model;
+            model.build_from_data(data_to_encode);
+
+            RangeEncoder encoder;
+            for (uint8_t byte : data_to_encode) {
                 uint32_t cum_freq_low, cum_freq_high;
                 model.get_symbol_range(byte, cum_freq_low, cum_freq_high);
                 encoder.encode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
             }
 
-            // Encode EOF symbol
             uint32_t cum_freq_low, cum_freq_high;
             model.get_symbol_range(FrequencyModel::get_eof_symbol(), cum_freq_low, cum_freq_high);
             encoder.encode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
@@ -202,7 +239,6 @@ int main(int argc, char* argv[]) {
             encoder.finish();
             const std::vector<uint8_t>& encoded_data = encoder.get_output();
 
-            // Write frequency table (257 * 4 bytes)
             const auto& frequencies = model.get_frequencies();
             for (int i = 0; i < 257; i++) {
                 uint32_t freq = frequencies[i];
@@ -211,53 +247,40 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // Write encoded data
             output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
 
-        } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2) {
-            std::string model_name = (model_type == ModelType::ORDER_1) ? "Order-1" : "Order-2";
+        } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2 || model_type == ModelType::ORDER_1_BWT) {
+            std::string model_name = (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_1_BWT) ? "Order-1" : "Order-2";
             std::cout << "Using " << model_name << " adaptive context model..." << std::endl;
+            std::cout << "Encoding with simplified adaptive model..." << std::endl;
 
-            // Initialize adaptive context model with simplified encoding
             ContextModel model;
-            model.set_encoding_method_simple();  // Use simplified mode (Phase 1: no exclusions)
+            model.set_encoding_method_simple();
             model.init_adaptive();
 
-            // Encode data
-            std::cout << "Encoding with simplified adaptive model..." << std::endl;
             RangeEncoder encoder;
 
-            for (size_t idx = 0; idx < input_data.size(); idx++) {
-                uint8_t byte = input_data[idx];
+            for (size_t idx = 0; idx < data_to_encode.size(); idx++) {
+                uint8_t byte = data_to_encode[idx];
 
-                // Get encoding steps (may include escapes)
                 auto steps = model.encode_symbol(byte);
-
-                // Encode all steps
                 for (const auto& step : steps) {
                     encoder.encode_symbol(step.cum_freq_low, step.cum_freq_high, step.total_freq);
                 }
 
-                // Update model adaptively (CRITICAL: both encoder and decoder must do this)
                 model.update_frequencies(byte);
                 model.update_history(byte);
             }
 
-            // No EOF symbol needed - we rely on file size
-
             encoder.finish();
             const std::vector<uint8_t>& encoded_data = encoder.get_output();
 
-            // For adaptive PPM, NO model data is stored!
-            // Decoder will build the same model by updating frequencies identically
             output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
         } else if (model_type == ModelType::UNCOMPRESSED) {
             std::cout << "Storing UNCOMPRESSED (detected incompressible data)" << std::endl;
-            // Just copy the input data as-is (header already written)
             output_data.insert(output_data.end(), input_data.begin(), input_data.end());
         }
 
-        // Write output file
         std::cout << "Writing compressed file: " << output_filename << std::endl;
         FileIO::write_file(output_filename, output_data);
 

@@ -8,26 +8,20 @@ FrequencyModel::FrequencyModel() : total_freq(0) {
 }
 
 void FrequencyModel::build_from_data(const std::vector<uint8_t>& data) {
-    // Reset frequencies
     frequencies.fill(0);
 
-    // Count frequencies of each byte
     for (uint8_t byte : data) {
         frequencies[byte]++;
     }
 
-    // Add EOF symbol with frequency 1
     frequencies[EOF_SYMBOL] = 1;
 
-    // Ensure no symbol has zero frequency (to avoid division by zero issues)
-    // This is important for the arithmetic coder
     for (int i = 0; i < ALPHABET_SIZE; i++) {
         if (frequencies[i] == 0) {
             frequencies[i] = 1;
         }
     }
 
-    // Build cumulative frequency table
     build_cumulative_freq();
 }
 
@@ -48,7 +42,6 @@ void FrequencyModel::get_symbol_range(int symbol, uint32_t& cum_freq_low, uint32
 }
 
 int FrequencyModel::find_symbol(uint32_t cum_freq) const {
-    // Binary search to find the symbol
     int low = 0;
     int high = ALPHABET_SIZE - 1;
 

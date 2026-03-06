@@ -33,27 +33,26 @@ void RangeEncoder::output_byte(uint8_t byte) {
 }
 
 void RangeEncoder::start_encoding_internal(char c, int initlength) {
-    rc.low = 0;                 // Full code range
+    rc.low = 0;
     rc.range = Top_value;
     rc.buffer = c;
-    rc.help = 0;                // No bytes to follow
+    rc.help = 0;
     rc.bytecount = initlength;
 }
 
-// Schindler's normalization - outputs bytes when range gets too small
 void RangeEncoder::enc_normalize() {
-    while (rc.range <= Bottom_value) {  // do we need renormalisation?
-        if (rc.low < (code_value)0xff << SHIFT_BITS) {  // no carry possible --> output
+    while (rc.range <= Bottom_value) {
+        if (rc.low < (code_value)0xff << SHIFT_BITS) {
             output_byte(rc.buffer);
             for (; rc.help; rc.help--)
                 output_byte(0xff);
             rc.buffer = (unsigned char)(rc.low >> SHIFT_BITS);
-        } else if (rc.low & Top_value) {  // carry now, no future carry
+        } else if (rc.low & Top_value) {
             output_byte(rc.buffer + 1);
             for (; rc.help; rc.help--)
                 output_byte(0);
             rc.buffer = (unsigned char)(rc.low >> SHIFT_BITS);
-        } else {  // passes on a potential carry
+        } else {
             rc.help++;
         }
         rc.range <<= 8;
@@ -61,8 +60,6 @@ void RangeEncoder::enc_normalize() {
         rc.bytecount++;
     }
 }
-
-// Schindler's encode_freq - core encoding function
 void RangeEncoder::encode_freq_internal(freq sy_f, freq lt_f, freq tot_f) {
     code_value r, tmp;
     enc_normalize();
@@ -75,7 +72,6 @@ void RangeEncoder::encode_freq_internal(freq sy_f, freq lt_f, freq tot_f) {
         rc.range -= tmp;
 }
 
-// Public API wrapper
 void RangeEncoder::encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
     freq sy_f = cum_freq_high - cum_freq_low;
     freq lt_f = cum_freq_low;
@@ -83,10 +79,9 @@ void RangeEncoder::encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, 
     encode_freq_internal(sy_f, lt_f, tot_f);
 }
 
-// Schindler's done_encoding - finish and flush
 uint32_t RangeEncoder::done_encoding_internal() {
     uint32_t tmp;
-    enc_normalize();  // now we have a normalized state
+    enc_normalize();
     rc.bytecount += 5;
     if ((rc.low & (Bottom_value - 1)) < ((rc.bytecount & 0xffffffL) >> 1))
         tmp = rc.low >> SHIFT_BITS;
@@ -123,15 +118,14 @@ RangeDecoder::RangeDecoder(const std::vector<uint8_t>& input)
 
 uint8_t RangeDecoder::input_byte() {
     if (position >= input_buffer.size()) {
-        return 0;  // Return 0 if we've exhausted input
+        return 0;
     }
     return input_buffer[position++];
 }
 
-// Schindler's start_decoding
 int RangeDecoder::start_decoding_internal() {
     int c = input_byte();
-    if (c == -1) {  // EOF check (won't happen with vector, but keep for compatibility)
+    if (c == -1) {
         throw std::runtime_error("Unexpected end of input");
     }
     rc.buffer = input_byte();
@@ -140,7 +134,6 @@ int RangeDecoder::start_decoding_internal() {
     return c;
 }
 
-// Schindler's dec_normalize
 void RangeDecoder::dec_normalize() {
     while (rc.range <= Bottom_value) {
         rc.low = (rc.low << 8) | ((rc.buffer << EXTRA_BITS) & 0xff);
@@ -150,7 +143,6 @@ void RangeDecoder::dec_normalize() {
     }
 }
 
-// Schindler's decode_culfreq - get cumulative frequency
 freq RangeDecoder::decode_culfreq_internal(freq tot_f) {
     freq tmp;
     dec_normalize();
@@ -159,12 +151,10 @@ freq RangeDecoder::decode_culfreq_internal(freq tot_f) {
     return (tmp >= tot_f ? tot_f - 1 : tmp);
 }
 
-// Public API wrapper
 uint32_t RangeDecoder::get_current_count(uint32_t total_freq) {
     return decode_culfreq_internal(total_freq);
 }
 
-// Schindler's decode_update - update decoder state after symbol found
 void RangeDecoder::decode_update_internal(freq sy_f, freq lt_f, freq tot_f) {
     code_value tmp;
     tmp = rc.help * lt_f;
@@ -175,7 +165,6 @@ void RangeDecoder::decode_update_internal(freq sy_f, freq lt_f, freq tot_f) {
         rc.range -= tmp;
 }
 
-// Public API wrapper
 void RangeDecoder::decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
     freq sy_f = cum_freq_high - cum_freq_low;
     freq lt_f = cum_freq_low;
@@ -184,5 +173,5 @@ void RangeDecoder::decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, 
 }
 
 void RangeDecoder::done_decoding_internal() {
-    dec_normalize();  // normalize to use up all bytes
+    dec_normalize();
 }

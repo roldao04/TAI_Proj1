@@ -29,12 +29,10 @@ void ArithmeticEncoder::output_bit_plus_pending(int bit) {
 }
 
 void ArithmeticEncoder::encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
-    // Update range
     uint64_t range = (uint64_t)high - (uint64_t)low + 1;
     high = low + (uint32_t)((range * cum_freq_high) / total_freq) - 1;
     low = low + (uint32_t)((range * cum_freq_low) / total_freq);
 
-    // Renormalization
     while (true) {
         if (high < HALF) {
             output_bit_plus_pending(0);
@@ -62,7 +60,6 @@ void ArithmeticEncoder::finish() {
         output_bit_plus_pending(1);
     }
 
-    // Flush remaining bits
     if (bits_in_current_byte > 0) {
         current_byte <<= (8 - bits_in_current_byte);
         output_buffer.push_back(current_byte);
@@ -77,27 +74,22 @@ ArithmeticDecoder::ArithmeticDecoder(const std::vector<uint8_t>& input)
     : low(0), high(TOP_VALUE), value(0), input_buffer(input),
       current_byte_index(0), bits_in_current_byte(0) {
 
-    // Initialize value with first 32 bits
     for (uint32_t i = 0; i < CODE_VALUE_BITS; i++) {
         value = (value << 1) | input_bit();
     }
 }
 
 int ArithmeticDecoder::input_bit() {
-    // Check if we need to load a new byte
     if (bits_in_current_byte == 0) {
         if (current_byte_index >= input_buffer.size()) {
-            return 0;  // Return 0 if we've read all input
+            return 0;
         }
         bits_in_current_byte = 8;
-        // Note: we don't increment current_byte_index here, it will be done after reading all 8 bits
     }
 
-    // Extract the bit from current byte (MSB first)
     int bit = (input_buffer[current_byte_index] >> (bits_in_current_byte - 1)) & 1;
     bits_in_current_byte--;
 
-    // After reading all 8 bits from current byte, move to next byte
     if (bits_in_current_byte == 0) {
         current_byte_index++;
     }
@@ -113,15 +105,13 @@ uint32_t ArithmeticDecoder::get_current_count(uint32_t total_freq) {
 }
 
 void ArithmeticDecoder::decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
-    // Update range (same as encoder)
     uint64_t range = (uint64_t)high - (uint64_t)low + 1;
     high = low + (uint32_t)((range * cum_freq_high) / total_freq) - 1;
     low = low + (uint32_t)((range * cum_freq_low) / total_freq);
 
-    // Renormalization
     while (true) {
         if (high < HALF) {
-            // Do nothing
+
         } else if (low >= HALF) {
             low -= HALF;
             high -= HALF;

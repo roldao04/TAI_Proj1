@@ -12,6 +12,7 @@ const int ContextModel::MAX_ORDER;
 
 ContextModel::ContextModel() {
     order0_context = std::make_unique<Context>();
+    encoding_method_ = EncodingMethod::SIMPLE;  // Default to simple mode for speed
     reset();
 }
 
@@ -36,11 +37,8 @@ ContextModel::Context* ContextModel::get_context(int order) {
         if (history.size() < 1) return nullptr;
         uint32_t ctx_id = get_context_id_order1();
         return order1_contexts[ctx_id].get();
-    } else if (order == 2) {
-        if (history.size() < 2) return nullptr;
-        uint32_t ctx_id = get_context_id_order2();
-        return order2_contexts[ctx_id].get();
     }
+    // Order-2 removed - no benefit over Order-1
     return nullptr;
 }
 
@@ -59,25 +57,8 @@ void ContextModel::ensure_context_exists(int order) {
                 order1_contexts[ctx_id] = std::make_unique<Context>();
             }
         }
-    } else if (order == 2) {
-        if (history.size() < 2) return;
-        uint32_t ctx_id = get_context_id_order2();
-        if (!order2_contexts[ctx_id]) {
-            // Lazy context creation threshold: only create if context bytes seen enough times
-            uint8_t context_byte1 = history[history.size() - 2];
-            uint8_t context_byte2 = history[history.size() - 1];
-
-            // Check if both context bytes have reasonable frequency at Order-0
-            bool byte1_common = (order0_context->frequencies.find(context_byte1) != order0_context->frequencies.end() &&
-                                order0_context->frequencies[context_byte1] >= 3);
-            bool byte2_common = (order0_context->frequencies.find(context_byte2) != order0_context->frequencies.end() &&
-                                order0_context->frequencies[context_byte2] >= 3);
-
-            if (byte1_common && byte2_common) {
-                order2_contexts[ctx_id] = std::make_unique<Context>();
-            }
-        }
     }
+    // Order-2 removed - no benefit over Order-1
 }
 
 void ContextModel::init_adaptive() {
@@ -92,7 +73,10 @@ void ContextModel::init_adaptive() {
     // Reset history
     reset();
 
-    std::cout << "Adaptive context model initialized" << std::endl;
+    // Log initialization mode
+    std::cout << "Adaptive context model initialized (";
+    std::cout << (encoding_method_ == EncodingMethod::SIMPLE ? "Simple" : "PPM Method C");
+    std::cout << " mode)" << std::endl;
 }
 
 void ContextModel::init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size) {
@@ -136,18 +120,7 @@ void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
     for (size_t i = 0; i < data.size(); i++) {
         uint8_t byte = data[i];
 
-        // Update Order-2 context
-        if (history.size() >= 2) {
-            ensure_context_exists(2);
-            ContextModel::Context* ctx = get_context(2);
-            if (ctx) {
-                if (ctx->frequencies.find(byte) == ctx->frequencies.end()) {
-                    ctx->frequencies[byte] = 0;
-                }
-                ctx->frequencies[byte]++;
-                ctx->total_freq++;
-            }
-        }
+        // Order-2 removed - no benefit over Order-1
 
         // Update Order-1 context
         if (history.size() >= 1) {
@@ -174,17 +147,8 @@ void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
 
     // Add escape symbols to all contexts that have seen symbols
     // Escape frequency based on context size (more symbols = higher escape probability)
-    // Order-2 contexts
-    for (auto& ctx_ptr : order2_contexts) {
-        if (ctx_ptr && ctx_ptr->frequencies.size() > 0) {
-            int unique_symbols = ctx_ptr->frequencies.size();
-            // Escape frequency = unique_symbols / 4, minimum 1
-            uint32_t escape_freq = std::max(1, unique_symbols / 4);
-            ctx_ptr->frequencies[ESCAPE_SYMBOL] = escape_freq;
-            ctx_ptr->total_freq += escape_freq;
-            ctx_ptr->invalidate_cache();  // Mark cache as dirty
-        }
-    }
+
+    // Order-2 removed - no benefit over Order-1
 
     // Order-1 contexts
     for (auto& ctx_ptr : order1_contexts) {
@@ -209,10 +173,15 @@ void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
 }
 
 void ContextModel::update_history(uint8_t byte) {
-    history.push_back(byte);
-    // Keep only last MAX_ORDER bytes
-    if (history.size() > MAX_ORDER) {
-        history.erase(history.begin());
+    // Phase 2.2 Optimization: Use efficient history management
+    if (history.size() >= MAX_ORDER) {
+        // Rotate left: shift all elements left by 1, then set last element
+        // This is O(n) but better than erase which reallocates
+        // Alternative: std::rotate for cleaner code
+        std::rotate(history.begin(), history.begin() + 1, history.end());
+        history[MAX_ORDER - 1] = byte;
+    } else {
+        history.push_back(byte);
     }
 }
 
@@ -221,7 +190,8 @@ void ContextModel::update_frequencies(uint8_t byte) {
     // This ensures both encoder and decoder build the same model
 
     // Determine which contexts we should update based on current history
-    int max_order = (history.size() >= 2) ? 2 : (history.size() >= 1) ? 1 : 0;
+    // NOTE: Order-2 disabled - no benefit over Order-1, adds complexity
+    int max_order = (history.size() >= 1) ? 1 : 0;  // Was: >= 2 ? 2 : ...
 
     // Update from highest order down to Order-0
     for (int order = max_order; order >= 0; order--) {
@@ -269,9 +239,65 @@ void ContextModel::update_frequencies(uint8_t byte) {
     }
 }
 
+// SRP: Main encoding dispatcher (DIP: depends on abstract strategy)
 std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol(uint8_t byte) {
-    // Use PPM Method C with exclusions for better compression
-    return encode_symbol_with_exclusions(byte);
+    if (encoding_method_ == EncodingMethod::SIMPLE) {
+        return encode_symbol_simple(byte);
+    } else {
+        return encode_symbol_with_exclusions(byte);
+    }
+}
+
+// NEW: Simplified encoding without exclusions (SRP: single responsibility)
+std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_simple(uint8_t byte) {
+    std::vector<EncodingStep> steps;
+
+    // Determine maximum order based on history
+    int current_order = std::min(static_cast<int>(history.size()), MAX_ORDER);
+
+    // For Phase 1, only use Order-1 (skip Order-2 for simplicity and speed)
+    if (current_order > 1) {
+        current_order = 1;
+    }
+
+    // Try encoding from highest to lowest order
+    while (current_order >= 0) {
+        Context* ctx = get_context(current_order);
+
+        // Check if context exists and has the symbol
+        if (ctx && ctx->has_symbol(byte)) {
+            // Symbol found - encode it directly (no exclusions!)
+            EncodingStep step;
+            step.symbol = byte;
+            get_symbol_range(current_order, byte,
+                           step.cum_freq_low, step.cum_freq_high, step.total_freq);
+            steps.push_back(step);
+            return steps;  // Done!
+        }
+
+        // Symbol not found in this context
+        if (current_order > 0 && ctx) {
+            // Encode escape symbol to fall back to lower order
+            EncodingStep escape_step;
+            escape_step.symbol = ESCAPE_SYMBOL;
+            get_symbol_range(current_order, ESCAPE_SYMBOL,
+                           escape_step.cum_freq_low, escape_step.cum_freq_high,
+                           escape_step.total_freq);
+            steps.push_back(escape_step);
+        }
+
+        // Move to lower order
+        current_order--;
+    }
+
+    // If we reach here, encode from Order-0 (guaranteed to have all symbols)
+    EncodingStep step;
+    step.symbol = byte;
+    get_symbol_range(0, byte,
+                   step.cum_freq_low, step.cum_freq_high, step.total_freq);
+    steps.push_back(step);
+
+    return steps;
 }
 
 std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_with_exclusions(uint8_t byte) {
@@ -451,17 +477,12 @@ void ContextModel::print_statistics() const {
     std::cout << "=== Context Model Statistics ===" << std::endl;
 
     // Count non-empty contexts
-    int order2_count = 0;
-    for (const auto& ctx : order2_contexts) {
-        if (ctx && ctx->frequencies.size() > 0) order2_count++;
-    }
-
     int order1_count = 0;
     for (const auto& ctx : order1_contexts) {
         if (ctx && ctx->frequencies.size() > 0) order1_count++;
     }
 
-    std::cout << "Order-2 contexts: " << order2_count << " / 65536" << std::endl;
+    // Order-2 removed - no benefit over Order-1
     std::cout << "Order-1 contexts: " << order1_count << " / 256" << std::endl;
     std::cout << "Order-0 symbols: " << order0_context->frequencies.size() << std::endl;
 }

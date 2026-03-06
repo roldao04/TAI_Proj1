@@ -12,6 +12,10 @@ TEMP_DIR="benchmarks/tmp"
 RESULTS_CSV="benchmarks/results.csv"
 RESULTS_MD="benchmarks/results.md"
 
+# Timeout configuration (seconds)
+COMPRESS_TIMEOUT=60    # Maximum time for compression
+DECOMPRESS_TIMEOUT=30  # Maximum time for decompression
+
 # Colors
 BOLD='\033[1m'
 GREEN='\033[0;32m'
@@ -69,18 +73,25 @@ benchmark_file_tool() {
     local compressed_file="$6"
     local original_size="$7"
 
-    # Compression
+    # Compression with timeout
     local start=$(date +%s%N)
-    if ! eval $compress_cmd > /dev/null 2>&1; then
-        echo "ERROR,ERROR,ERROR,ERROR,ERROR" >> "$TEMP_DIR/${basename}.${tool_name}.result"
-        return 1
-    fi
+    timeout $COMPRESS_TIMEOUT bash -c "$compress_cmd" > /dev/null 2>&1
+    local exit_code=$?
     local end=$(date +%s%N)
     local compress_time=$(( (end - start) / 1000000 ))
 
+    # Check for timeout or error
+    if [ $exit_code -eq 124 ]; then
+        echo "TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT" >> "$TEMP_DIR/${basename}.${tool_name}.result"
+        return 1
+    elif [ $exit_code -ne 0 ]; then
+        echo "ERROR,ERROR,ERROR,ERROR,ERROR,ERROR" >> "$TEMP_DIR/${basename}.${tool_name}.result"
+        return 1
+    fi
+
     # Check if compression succeeded
     if [ ! -f "$compressed_file" ]; then
-        echo "ERROR,ERROR,ERROR,ERROR,ERROR" >> "$TEMP_DIR/${basename}.${tool_name}.result"
+        echo "ERROR,ERROR,ERROR,ERROR,ERROR,ERROR" >> "$TEMP_DIR/${basename}.${tool_name}.result"
         return 1
     fi
 
@@ -88,16 +99,24 @@ benchmark_file_tool() {
     local ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $compressed_size / $original_size}")
     local bits_per_symbol=$(awk "BEGIN {printf \"%.4f\", 8.0 * $compressed_size / $original_size}")
 
-    # Decompression
+    # Decompression with timeout
     local decompressed_file="$TEMP_DIR/${basename}.${tool_name}.decompressed"
     start=$(date +%s%N)
-    if ! eval $decompress_cmd > /dev/null 2>&1; then
+    timeout $DECOMPRESS_TIMEOUT bash -c "$decompress_cmd" > /dev/null 2>&1
+    exit_code=$?
+    end=$(date +%s%N)
+    local decompress_time=$(( (end - start) / 1000000 ))
+
+    # Check for timeout or error
+    if [ $exit_code -eq 124 ]; then
+        echo "$compressed_size,$ratio,$bits_per_symbol,$compress_time,TIMEOUT,TIMEOUT" >> "$TEMP_DIR/${basename}.${tool_name}.result"
+        rm -f "$compressed_file"
+        return 1
+    elif [ $exit_code -ne 0 ]; then
         echo "$compressed_size,$ratio,$bits_per_symbol,$compress_time,ERROR,NO" >> "$TEMP_DIR/${basename}.${tool_name}.result"
         rm -f "$compressed_file"
         return 1
     fi
-    end=$(date +%s%N)
-    local decompress_time=$(( (end - start) / 1000000 ))
 
     # Verify lossless
     local lossless="NO"
@@ -137,49 +156,64 @@ for file in "$DATA_DIR"/*; do
 
     # Test our compressor
     echo -n "  Testing G07... "
-    benchmark_file_tool "$file" "$basename" "g07" \
-        "./bin/compress '$file' '$TEMP_DIR/${basename}.g07'" \
+    if benchmark_file_tool "$file" "$basename" "g07" \
+        "./bin/compress '$file' '$TEMP_DIR/${basename}.g07' --yes" \
         "./bin/decompress '$TEMP_DIR/${basename}.g07' '$TEMP_DIR/${basename}.g07.decompressed'" \
         "$TEMP_DIR/${basename}.g07" \
-        "$original_size"
-    echo -e "${GREEN}✓${NC}"
+        "$original_size"; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
+    fi
 
     # Test gzip
     echo -n "  Testing gzip... "
-    benchmark_file_tool "$file" "$basename" "gzip" \
+    if benchmark_file_tool "$file" "$basename" "gzip" \
         "gzip -c '$file' > '$TEMP_DIR/${basename}.gz'" \
         "gzip -dc '$TEMP_DIR/${basename}.gz' > '$TEMP_DIR/${basename}.gzip.decompressed'" \
         "$TEMP_DIR/${basename}.gz" \
-        "$original_size"
-    echo -e "${GREEN}✓${NC}"
+        "$original_size"; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
+    fi
 
     # Test bzip2
     echo -n "  Testing bzip2... "
-    benchmark_file_tool "$file" "$basename" "bzip2" \
+    if benchmark_file_tool "$file" "$basename" "bzip2" \
         "bzip2 -c '$file' > '$TEMP_DIR/${basename}.bz2'" \
         "bzip2 -dc '$TEMP_DIR/${basename}.bz2' > '$TEMP_DIR/${basename}.bzip2.decompressed'" \
         "$TEMP_DIR/${basename}.bz2" \
-        "$original_size"
-    echo -e "${GREEN}✓${NC}"
+        "$original_size"; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
+    fi
 
     # Test xz
     echo -n "  Testing xz... "
-    benchmark_file_tool "$file" "$basename" "xz" \
+    if benchmark_file_tool "$file" "$basename" "xz" \
         "xz -c '$file' > '$TEMP_DIR/${basename}.xz'" \
         "xz -dc '$TEMP_DIR/${basename}.xz' > '$TEMP_DIR/${basename}.xz.decompressed'" \
         "$TEMP_DIR/${basename}.xz" \
-        "$original_size"
-    echo -e "${GREEN}✓${NC}"
+        "$original_size"; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
+    fi
 
     # Test zstd (if available)
     if command -v zstd &> /dev/null; then
         echo -n "  Testing zstd... "
-        benchmark_file_tool "$file" "$basename" "zstd" \
+        if benchmark_file_tool "$file" "$basename" "zstd" \
             "zstd -q '$file' -o '$TEMP_DIR/${basename}.zst'" \
             "zstd -qd '$TEMP_DIR/${basename}.zst' -o '$TEMP_DIR/${basename}.zstd.decompressed'" \
             "$TEMP_DIR/${basename}.zst" \
-            "$original_size"
-        echo -e "${GREEN}✓${NC}"
+            "$original_size"; then
+            echo -e "${GREEN}✓${NC}"
+        else
+            echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
+        fi
     fi
 
     echo
@@ -279,6 +313,15 @@ for file in "$DATA_DIR"/*; do
         if [ -f "$result_file" ]; then
             IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless <<< $(cat "$result_file")
 
+            # Handle timeout cases
+            if [ "$comp_size" = "TIMEOUT" ]; then
+                echo "| $tool | ⏱️ TIMEOUT (>${COMPRESS_TIMEOUT}s) | - | - | - | - | - | ⏱️ |" >> "$RESULTS_MD"
+                continue
+            elif [ "$comp_size" = "ERROR" ]; then
+                echo "| $tool | ❌ ERROR | - | - | - | - | - | ❌ |" >> "$RESULTS_MD"
+                continue
+            fi
+
             comp_size_display=$(numfmt --to=iec-i --suffix=B $comp_size)
             saved=$(( original_size - comp_size ))
             saved_display=$(numfmt --to=iec-i --suffix=B $saved | sed 's/^-//')
@@ -300,11 +343,19 @@ for file in "$DATA_DIR"/*; do
             fi
 
             lossless_mark="✓"
-            if [ "$lossless" != "YES" ]; then
+            if [ "$lossless" = "TIMEOUT" ]; then
+                lossless_mark="⏱️"
+                decomp_time="TIMEOUT (>${DECOMPRESS_TIMEOUT}s)"
+            elif [ "$lossless" != "YES" ]; then
                 lossless_mark="✗"
             fi
 
-            echo "| $tool | $comp_size_display ($comp_size) | $perf_indicator ${ratio}% | ${bits} | ${comp_time} ms | ${decomp_time} ms | $saved_str | $lossless_mark |" >> "$RESULTS_MD"
+            # Handle decompress timeout in time display
+            if [ "$decomp_time" = "ERROR" ]; then
+                decomp_time="ERROR"
+            fi
+
+            echo "| $tool | $comp_size_display ($comp_size) | $perf_indicator ${ratio}% | ${bits} | ${comp_time} ms | ${decomp_time} | $saved_str | $lossless_mark |" >> "$RESULTS_MD"
         fi
     done
 
@@ -323,7 +374,7 @@ echo >> "$RESULTS_MD"
 echo "| Tool | Avg Compress Time | Ranking |" >> "$RESULTS_MD"
 echo "|------|-------------------|---------|" >> "$RESULTS_MD"
 
-# Calculate averages and rank
+# Calculate averages and rank (skip TIMEOUT and ERROR)
 declare -A avg_compress_time
 for tool in g07 gzip bzip2 xz zstd; do
     total_time=0
@@ -334,8 +385,11 @@ for tool in g07 gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             time=$(cat "$result_file" | cut -d',' -f4)
-            total_time=$(( total_time + time ))
-            count=$(( count + 1 ))
+            # Skip TIMEOUT and ERROR
+            if [ "$time" != "TIMEOUT" ] && [ "$time" != "ERROR" ]; then
+                total_time=$(( total_time + time ))
+                count=$(( count + 1 ))
+            fi
         fi
     done
     if [ $count -gt 0 ]; then
@@ -364,7 +418,7 @@ echo >> "$RESULTS_MD"
 echo "| Tool | Avg Decompress Time | Ranking |" >> "$RESULTS_MD"
 echo "|------|---------------------|---------|" >> "$RESULTS_MD"
 
-# Calculate averages and rank
+# Calculate averages and rank (skip TIMEOUT and ERROR)
 declare -A avg_decompress_time
 for tool in g07 gzip bzip2 xz zstd; do
     total_time=0
@@ -375,8 +429,11 @@ for tool in g07 gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             time=$(cat "$result_file" | cut -d',' -f5)
-            total_time=$(( total_time + time ))
-            count=$(( count + 1 ))
+            # Skip TIMEOUT and ERROR
+            if [ "$time" != "TIMEOUT" ] && [ "$time" != "ERROR" ]; then
+                total_time=$(( total_time + time ))
+                count=$(( count + 1 ))
+            fi
         fi
     done
     if [ $count -gt 0 ]; then

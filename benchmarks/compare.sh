@@ -16,10 +16,15 @@ TEMP_DIR="benchmarks/tmp"
 
 mkdir -p "$TEMP_DIR"
 
+# Timeout configuration (seconds)
+COMPRESS_TIMEOUT=60    # Maximum time for compression
+DECOMPRESS_TIMEOUT=30  # Maximum time for decompression
+
 # Colors
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo -e "${BOLD}=== Compression Benchmark ===${NC}"
@@ -37,14 +42,18 @@ benchmark() {
 
     echo -e "${BLUE}--- $name ---${NC}"
 
-    # Compression
+    # Compression with timeout
     local start=$(date +%s%3N)
-    eval $compress_cmd > /dev/null 2>&1
+    timeout $COMPRESS_TIMEOUT bash -c "$compress_cmd" > /dev/null 2>&1
+    local exit_code=$?
     local end=$(date +%s%3N)
     local compress_time=$((end - start))
 
-    # Check if compression succeeded
-    if [ ! -f "$compressed_file" ]; then
+    # Check for timeout or error
+    if [ $exit_code -eq 124 ]; then
+        echo -e "${YELLOW}⚠ TIMEOUT: Compression exceeded ${COMPRESS_TIMEOUT}s${NC}"
+        return
+    elif [ $exit_code -ne 0 ] || [ ! -f "$compressed_file" ]; then
         echo "ERROR: Compression failed"
         return
     fi
@@ -53,12 +62,25 @@ benchmark() {
     local ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $compressed_size / $ORIGINAL_SIZE}")
     local bits_per_symbol=$(awk "BEGIN {printf \"%.4f\", 8.0 * $compressed_size / $ORIGINAL_SIZE}")
 
-    # Decompression
+    # Decompression with timeout
     local decompressed_file="$TEMP_DIR/${BASENAME}.decompressed"
     start=$(date +%s%3N)
-    eval $decompress_cmd > /dev/null 2>&1
+    timeout $DECOMPRESS_TIMEOUT bash -c "$decompress_cmd" > /dev/null 2>&1
+    exit_code=$?
     end=$(date +%s%3N)
     local decompress_time=$((end - start))
+
+    # Check for timeout
+    if [ $exit_code -eq 124 ]; then
+        echo "Compressed size:   $compressed_size bytes"
+        echo -e "Compression ratio: $ratio%"
+        echo "Bits per symbol:   $bits_per_symbol"
+        echo "Compress time:     ${compress_time} ms"
+        echo -e "Decompress time:   ${YELLOW}⚠ TIMEOUT (>${DECOMPRESS_TIMEOUT}s)${NC}"
+        echo
+        rm -f "$compressed_file" "$decompressed_file"
+        return
+    fi
 
     # Verify lossless
     if cmp -s "$INPUT_FILE" "$decompressed_file"; then
@@ -81,7 +103,7 @@ benchmark() {
 
 # Our compressor
 benchmark "G07 Compressor" \
-    "./bin/compress '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.g07'" \
+    "./bin/compress '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.g07' --yes" \
     "./bin/decompress '$TEMP_DIR/${BASENAME}.g07' '$TEMP_DIR/${BASENAME}.decompressed'" \
     "$TEMP_DIR/${BASENAME}.g07"
 

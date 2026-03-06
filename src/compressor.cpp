@@ -33,17 +33,20 @@ enum class ModelType {
 };
 
 void print_usage(const char* program_name) {
-    std::cerr << "Usage: " << program_name << " <input_file> <output_file> [--model order0|order1|order2|auto]" << std::endl;
+    std::cerr << "Usage: " << program_name << " <input_file> <output_file> [--model order0|order1|auto] [--yes]" << std::endl;
     std::cerr << "\nOptions:" << std::endl;
     std::cerr << "  --model auto      Auto-select best model based on file analysis (default)" << std::endl;
-    std::cerr << "  --model order0    Force Order-0 frequency model (fast, simple)" << std::endl;
-    std::cerr << "  --model order1    Force Order-1 context model (good for medium files)" << std::endl;
-    std::cerr << "  --model order2    Force Order-2 context model (best for large text)" << std::endl;
-    std::cerr << "\nAuto-selection rules:" << std::endl;
-    std::cerr << "  Entropy > 7.5 bits/symbol → Store uncompressed (already compressed)" << std::endl;
-    std::cerr << "  File < 10KB  → Order-0 (avoid adaptive overhead)" << std::endl;
-    std::cerr << "  File >= 10KB → Order-1 (adaptive context model)" << std::endl;
-    std::cerr << "  Note: Order-2 currently disabled due to decompression performance" << std::endl;
+    std::cerr << "  --model order0    Force Order-0 frequency model (fast, universal)" << std::endl;
+    std::cerr << "  --model order1    Force Order-1 adaptive model (best compression for low-entropy data)" << std::endl;
+    std::cerr << "  --yes, -y         Skip interactive prompts (useful for automation/benchmarks)" << std::endl;
+    std::cerr << "\nAuto-selection rules (based on benchmark results):" << std::endl;
+    std::cerr << "  Entropy > 7.5 → UNCOMPRESSED (incompressible, e.g., already compressed)" << std::endl;
+    std::cerr << "  Entropy 6.8-7.5 → Order-0 (high entropy, Order-1 too slow for marginal gain)" << std::endl;
+    std::cerr << "  File < 100KB → Order-0 (adaptive overhead not worth it)" << std::endl;
+    std::cerr << "  Otherwise → Order-1 (low entropy, achieves 20-50% better compression)" << std::endl;
+    std::cerr << "\nNotes:" << std::endl;
+    std::cerr << "  - Order-1 uses simplified encoding (no PPM Method C exclusions)" << std::endl;
+    std::cerr << "  - Order-2 removed (provided no benefit over Order-1)" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -58,13 +61,17 @@ int main(int argc, char* argv[]) {
     // Default: auto-select based on file size (will be determined after reading file)
     ModelType model_type = ModelType::ORDER_0;
     bool auto_select = true;  // Automatic model selection by default
+    bool force_mode = false;   // Skip interactive prompts (for automation/benchmarks)
 
-    // Parse optional model argument
-    if (argc >= 4) {
-        std::string model_arg = argv[3];
-        if (model_arg == "--model") {
-            if (argc >= 5) {
-                std::string model_name = argv[4];
+    // Parse optional arguments
+    for (int i = 3; i < argc; i++) {
+        std::string arg = argv[i];
+
+        if (arg == "--yes" || arg == "-y") {
+            force_mode = true;
+        } else if (arg == "--model") {
+            if (i + 1 < argc) {
+                std::string model_name = argv[i + 1];
                 if (model_name == "order0") {
                     model_type = ModelType::ORDER_0;
                     auto_select = false;  // User override
@@ -72,8 +79,10 @@ int main(int argc, char* argv[]) {
                     model_type = ModelType::ORDER_1;
                     auto_select = false;  // User override
                 } else if (model_name == "order2") {
-                    model_type = ModelType::ORDER_2;
-                    auto_select = false;  // User override
+                    std::cerr << "Error: Order-2 has been removed (provided no benefit over Order-1)" << std::endl;
+                    std::cerr << "       Benchmark results showed identical compression ratios with worse performance" << std::endl;
+                    std::cerr << "       Use --model order1 instead, or --model auto for automatic selection" << std::endl;
+                    return 1;
                 } else if (model_name == "auto") {
                     auto_select = true;  // Explicitly request auto-selection
                 } else {
@@ -81,8 +90,9 @@ int main(int argc, char* argv[]) {
                     print_usage(argv[0]);
                     return 1;
                 }
+                i++;  // Skip next argument (model name)
             } else {
-                std::cerr << "Error: --model requires an argument (order0, order1, order2, or auto)" << std::endl;
+                std::cerr << "Error: --model requires an argument (order0, order1, or auto)" << std::endl;
                 print_usage(argv[0]);
                 return 1;
             }
@@ -103,18 +113,57 @@ int main(int argc, char* argv[]) {
             double entropy = EntropyCalculator::calculate(input_data, 8192);
             std::cout << "Detected entropy: " << entropy << " bits/symbol" << std::endl;
 
-            // Decision logic - TEMPORARY: Force Order-0 only for speed testing
+            // Decision logic (Improved based on benchmark results)
             if (entropy > 7.5) {
-                // Incompressible data (random, encrypted, already compressed)
+                // Incompressible data (File D: entropy ~8.0, expands to 102%)
+                // Better to store uncompressed
                 model_type = ModelType::UNCOMPRESSED;
-                std::cout << "Decision: Store UNCOMPRESSED (entropy too high)" << std::endl;
-            } else {
-                // Force Order-0 for all compressible data (fast!)
+                std::cout << "Decision: UNCOMPRESSED (entropy " << entropy << " > 7.5, incompressible)" << std::endl;
+
+            } else if (entropy > 6.8) {
+                // High entropy files (Files E, F: entropy ~7.0-7.3, ratio ~87-88%)
+                // Order-1 is very slow (14-18s) and doesn't compress much better
+                // Order-0 achieves similar ratio in milliseconds
                 model_type = ModelType::ORDER_0;
-                std::cout << "Decision: Order-0 (forced for speed testing)" << std::endl;
+                std::cout << "Decision: Order-0 (high entropy " << entropy << " > 6.8, marginal compression benefit)" << std::endl;
+
+            } else if (input_data.size() < 102400) {  // < 100KB
+                // Small files: Order-0 is faster and header overhead matters
+                model_type = ModelType::ORDER_0;
+                std::cout << "Decision: Order-0 (small file < 100KB)" << std::endl;
+
+            } else {
+                // Low entropy, large files: Order-1 shines! (Files A, B, C, G, H)
+                // Achieves 20-50% better compression than Order-0
+                model_type = ModelType::ORDER_1;
+                std::cout << "Decision: Order-1 (entropy " << entropy << " < 6.8, good compression expected)" << std::endl;
             }
         } else {
             std::cout << "Using user-specified model" << std::endl;
+        }
+
+        // Safety check: warn if Order-1 manually selected for high-entropy data
+        if (!auto_select && model_type == ModelType::ORDER_1) {
+            double entropy = EntropyCalculator::calculate(input_data, 8192);
+            if (entropy > 6.8) {
+                std::cerr << "\n⚠️  WARNING: Order-1 not recommended for high-entropy files!" << std::endl;
+                std::cerr << "    Detected entropy: " << entropy << " bits/symbol (threshold: 6.8)" << std::endl;
+                std::cerr << "    Expected issues: Very slow compression (10-30s), possible timeout on decompression" << std::endl;
+                std::cerr << "    Recommendation: Use --model auto (automatic selection) or --model order0" << std::endl;
+
+                if (force_mode) {
+                    std::cerr << "    --yes flag detected: Proceeding with Order-1 despite warning" << std::endl;
+                } else {
+                    std::cerr << "\nContinue with Order-1 anyway? (y/N): ";
+
+                    char response;
+                    std::cin >> response;
+                    if (response != 'y' && response != 'Y') {
+                        std::cout << "Aborted. Using Order-0 instead for safety." << std::endl;
+                        model_type = ModelType::ORDER_0;
+                    }
+                }
+            }
         }
 
         std::vector<uint8_t> output_data;
@@ -169,14 +218,13 @@ int main(int argc, char* argv[]) {
             std::string model_name = (model_type == ModelType::ORDER_1) ? "Order-1" : "Order-2";
             std::cout << "Using " << model_name << " adaptive context model..." << std::endl;
 
-            // Initialize adaptive context model
-            // Note: Warm start disabled to maintain encoder/decoder sync
-            // Both start with uniform priors and adapt identically
+            // Initialize adaptive context model with simplified encoding
             ContextModel model;
+            model.set_encoding_method_simple();  // Use simplified mode (Phase 1: no exclusions)
             model.init_adaptive();
 
             // Encode data
-            std::cout << "Encoding with adaptive context model..." << std::endl;
+            std::cout << "Encoding with simplified adaptive model..." << std::endl;
             RangeEncoder encoder;
 
             for (size_t idx = 0; idx < input_data.size(); idx++) {

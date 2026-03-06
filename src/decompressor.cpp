@@ -107,87 +107,61 @@ int main(int argc, char* argv[]) {
 
         } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2) {
             // Order-1/2 adaptive: No header, build model during decompression
-            std::string model_name = (model_type == ModelType::ORDER_1) ? "Order-1" : "Order-2";
+            std::string model_name = (model_type == ModelType::ORDER_1) ? "Order-1 (Simple)" : "Order-2";
             std::cout << "Decoding with adaptive " << model_name << " context model..." << std::endl;
 
-            // Initialize adaptive model with warm start (MUST match encoder!)
-            // We need to decode first, then warm start
-            // For now, use simple init - warmup will happen as we decode
+            // Initialize adaptive model in simple mode (MUST match encoder!)
             ContextModel model;
+            model.set_encoding_method_simple();  // Use simplified mode (Phase 1)
             model.init_adaptive();
 
             // Extract encoded data (starts right after size header)
             std::vector<uint8_t> encoded_data(compressed_data.begin() + 9, compressed_data.end());
             RangeDecoder decoder(encoded_data);
 
+            // SRP: Simplified decoding loop (no exclusions, matches encode_symbol_simple)
             while (output_data.size() < original_size) {
-                // PPM Method C: Track exclusions (must match encoder exactly!)
-                std::vector<int> excluded_symbols;
+                // Determine starting order based on history (match encoder logic!)
+                int current_order = std::min(static_cast<int>(model.get_history_size()), 2);
 
-                // Determine starting order based on history (must match encoder logic!)
-                int current_order = (model.get_history_size() >= 2) ? 2 :
-                                   (model.get_history_size() >= 1) ? 1 : 0;
+                // Phase 1: Only use Order-1 (skip Order-2)
+                if (current_order > 1) {
+                    current_order = 1;
+                }
 
                 uint8_t decoded_byte = 0;
                 bool symbol_found = false;
 
-                // Try decoding with escape mechanism (matches encoder's logic with exclusions)
+                // Try decoding from highest to lowest order (simple escape mechanism)
                 while (current_order >= 0 && !symbol_found) {
-                    // Get current context total frequency
-                    // If we have exclusions, use excluded total; otherwise use full total
-                    uint32_t total_freq;
-
-                    if (!excluded_symbols.empty()) {
-                        total_freq = model.get_total_freq_with_exclusions(current_order, excluded_symbols);
-                    } else {
-                        total_freq = model.get_total_freq(current_order);
-                    }
+                    uint32_t total_freq = model.get_total_freq(current_order);
 
                     if (total_freq == 0) {
-                        // Context doesn't exist yet, fall back to Order-0 (match encoder behavior!)
-                        current_order = 0;
+                        // Context doesn't exist yet, fall back to lower order
+                        current_order--;
                         continue;
                     }
 
                     // Decode symbol from this order
                     uint32_t cum_freq = decoder.get_current_count(total_freq);
-                    int symbol;
-
-                    if (!excluded_symbols.empty()) {
-                        symbol = model.find_symbol_with_exclusions(current_order, cum_freq, excluded_symbols);
-                    } else {
-                        symbol = model.find_symbol(current_order, cum_freq);
-                    }
+                    int symbol = model.find_symbol(current_order, cum_freq);
 
                     if (symbol < 0) {
-                        throw std::runtime_error("Failed to find symbol during decompression");
+                        throw std::runtime_error("Symbol not found during decompression");
                     }
 
                     if (symbol == 256) {  // ESCAPE_SYMBOL
-                        // Decode the escape
+                        // Decode the escape and move to lower order
                         uint32_t cum_freq_low, cum_freq_high, total;
                         model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
                         decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
 
-                        // PPM Method C: After decoding escape, add all symbols from this context to exclusion list
-                        std::vector<int> ctx_symbols = model.get_context_symbols(current_order);
-                        for (int sym : ctx_symbols) {
-                            excluded_symbols.push_back(sym);
-                        }
-
-                        // Go to lower order
+                        // Fall back to lower order (no exclusions tracked)
                         current_order--;
                     } else {
-                        // Found actual symbol - decode it WITH exclusions if any
+                        // Found actual symbol - decode it
                         uint32_t cum_freq_low, cum_freq_high, total;
-
-                        if (excluded_symbols.empty()) {
-                            model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
-                        } else {
-                            model.get_symbol_range_with_exclusions(current_order, symbol, excluded_symbols,
-                                                                  cum_freq_low, cum_freq_high, total);
-                        }
-
+                        model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
                         decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
 
                         decoded_byte = static_cast<uint8_t>(symbol);

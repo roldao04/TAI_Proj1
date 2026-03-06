@@ -6,4 +6,4 @@ bin/
 obj/
 
 # Generated benchmark results
-benchmarks/tmp/
+benchmarks/tmp_models/

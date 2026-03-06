@@ -1,4 +1,4 @@
-# Version 2.5 - Detailed Documentation
+# Version 3 - Detailed Documentation
 
 **Release Date:** March 6, 2026
 
@@ -8,11 +8,11 @@
 
 ## Overview
 
-Version 2.5 introduces the Burrows-Wheeler Transform (BWT) as a preprocessing step before compression, significantly improving compression ratios on repetitive and structured data. This builds upon v2.0's multi-model system with an additional transformation layer.
+Version 3 introduces the Burrows-Wheeler Transform (BWT) as a preprocessing step before compression, significantly improving compression ratios on repetitive and structured data. This builds upon v2.0's multi-model system with an additional transformation layer.
 
 ---
 
-## What's New in v2.5
+## What's New in v3
 
 ### Major Features
 
@@ -37,7 +37,7 @@ Version 2.5 introduces the Burrows-Wheeler Transform (BWT) as a preprocessing st
 
 ## Core Components
 
-### 1. Burrows-Wheeler Transform (New in v2.5)
+### 1. Burrows-Wheeler Transform (New in v3)
 
 **What is BWT:**
 - Reversible transformation that reorders bytes in a block
@@ -72,7 +72,7 @@ The grouping of similar characters allows the frequency model to achieve much be
 - Primary indices stored in header for reconstruction
 - Last block may be smaller (handles any file size)
 
-### 2. BWT Auto-Selection (New in v2.5)
+### 2. BWT Auto-Selection (New in v3)
 
 **When BWT is Applied:**
 
@@ -102,7 +102,7 @@ Unchanged from v2.0:
 
 ### 4. Multi-Model System (From v2.0)
 
-Enhanced in v2.5:
+Enhanced in v3:
 - Order-0: Works with or without BWT
 - Order-1: Enhanced by BWT on suitable files
 - Auto-selection: Now considers BWT effectiveness
@@ -111,7 +111,7 @@ Enhanced in v2.5:
 
 ## Compressed File Format
 
-### Header Structure (v2.5)
+### Header Structure (v3)
 
 ```
 +-------------+------------------+-----------+-----------------+---------------+
@@ -120,7 +120,7 @@ Enhanced in v2.5:
 +-------------+------------------+-----------+-----------------+---------------+
 ```
 
-**New in v2.5:**
+**New in v3:**
 - **BWT Flag**: 0x00 = no BWT, 0x01 = BWT enabled
 - **BWT Indices**: If BWT enabled, stores primary indices for each block
   - Number of blocks = ceil(original_size / 1024)
@@ -132,8 +132,8 @@ Enhanced in v2.5:
 - `0xFF` = Uncompressed (incompressible file)
 
 **Backward Compatibility:**
-- v2.5 can read v2.0 files (BWT flag = 0x00)
-- v2.0 cannot read v2.5 files with BWT enabled
+- v3 can read v2.0 files (BWT flag = 0x00)
+- v2.0 cannot read v3 files with BWT enabled
 
 ---
 
@@ -152,7 +152,7 @@ Enhanced in v2.5:
 
 **Per-File Results:**
 
-| File | Type | Original | v2.5 Ratio | Result |
+| File | Type | Original | v3 Ratio | Result |
 |------|------|----------|------------|--------|
 | **A** | Text | 1.3MiB | **51.96%** | 🥇 Best (beats gzip, bzip2, xz, zstd) |
 | **B** | Structured | 1.2MiB | 23.60% | Good (xz wins at 17.76%) |
@@ -169,7 +169,7 @@ Enhanced in v2.5:
 |------|------|-----------|-----------|
 | 🥇 #1 | xz | 54.16% | 4/8 |
 | 🥈 #2 | bzip2 | 54.88% | 1/8 |
-| 🥉 #3 | **g07 v2.5** | **57.48%** | **3/8** |
+| 🥉 #3 | **g07 v3** | **57.48%** | **3/8** |
 | #4 | zstd | 58.59% | 0/8 |
 | #5 | gzip | 59.47% | 0/8 |
 
@@ -339,7 +339,7 @@ Output File
 
 ## Comparison with v2.0
 
-| Feature | v2.0 | v2.5 |
+| Feature | v2.0 | v3 |
 |---------|------|------|
 | **Preprocessing** | None | BWT (block-based) |
 | **BWT Block Size** | N/A | 1024 bytes |
@@ -431,8 +431,8 @@ The compressor automatically decides based on:
    - Auto-selection disables BWT for files < 1024 bytes
 
 3. **Backward Compatibility**
-   - v2.5 reads v2.0 files (BWT flag = 0)
-   - v2.0 cannot read v2.5 files with BWT enabled
+   - v3 reads v2.0 files (BWT flag = 0)
+   - v2.0 cannot read v3 files with BWT enabled
    - Solution: Use --no-bwt for v2.0 compatibility
 
 4. **Processing Time**
@@ -468,7 +468,7 @@ The compressor automatically decides based on:
 3. **Run-Length Encoding**: Pre-process runs after BWT
 4. **Parallel BWT**: Multi-threaded block processing
 
-**Current Status:** v2.5 is feature-complete with solid BWT implementation.
+**Current Status:** v3 is feature-complete with solid BWT implementation.
 
 ---
 

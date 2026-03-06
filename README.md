@@ -236,7 +236,7 @@ Features:
 - **Memory**: Uses ~8GB max (requirement compliant)
 - **Optimization**: Compiled with `-O3` for performance
 - **Platform**: Tested on Linux
-- **Average Compression Ratio**: **57.48%** (v2.5)
+- **Average Compression Ratio**: **57.48%** (v3)
   - v2.0: 62.74% | v1.0: 71.44%
   - **19.5% improvement over v1.0**
   - **8.4% improvement over v2.0**
@@ -250,9 +250,9 @@ Features:
 
 ## Version History
 
-See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history and [versions/g07_v2.5/README.md](versions/g07_v2.5/README.md) for comprehensive documentation.
+See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history and [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md) for comprehensive documentation.
 
-**Current Version**: 2.5 (March 2026)
+**Current Version**: 3.0 (March 2026)
 - **BWT preprocessing** (block-based, 1024-byte blocks)
 - Multi-model system (Order-0 + Order-1)
 - Range coding (faster than arithmetic)
@@ -268,7 +268,7 @@ See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history an
 
 ## Future Improvements
 
-Potential enhancements (see [versions/g07_v2.5/README.md](versions/g07_v2.5/README.md#future-improvements) for details):
+Potential enhancements (see [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md#future-improvements) for details):
 1. **Variable BWT Block Size**: Adaptive block size selection (1KB - 4KB)
 2. **Move-to-Front Transform**: Additional transform after BWT (used in bzip2)
 3. **Parallel BWT Processing**: Multi-threaded block processing

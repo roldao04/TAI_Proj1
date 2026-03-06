@@ -10,7 +10,7 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v2.5** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | **Current** |
+| **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | **Current** |
 | **v2.0** | 2026-03-05 | Multi-Model + Range Coding + Auto-Select | 62.74% avg ratio | Superseded |
 | **v1.0** | 2026-02-20 | Order-0 Model + Arithmetic Coding | 71.44% avg ratio | Superseded |
 
@@ -18,7 +18,7 @@ Group 07 - Universidade de Aveiro
 
 ## Version Details
 
-### v2.5 (March 2026) - Current Release
+### v3 (March 2026) - Current Release
 
 **Major Updates:**
 - **BWT Preprocessing**: Burrows-Wheeler Transform for improved compression
@@ -54,7 +54,7 @@ Group 07 - Universidade de Aveiro
 - New BWT flag in header (1 byte)
 - Primary indices stored for each block (4 bytes/block)
 - Backward compatible: Reads v2.0 files (BWT flag = 0x00)
-- v2.0 incompatible with v2.5 BWT-enabled files
+- v2.0 incompatible with v3 BWT-enabled files
 
 **Files Included:**
 - `compress` - Compression binary with BWT support
@@ -68,7 +68,7 @@ Group 07 - Universidade de Aveiro
 - File G (structured): 27.92% vs v2.0's 28.81% (best among all tools)
 - Maintains competitive speed with multi-model system
 
-**Detailed Documentation:** See [v2.5 README](g07_v2.5/README.md)
+**Detailed Documentation:** See [v3 README](g07_v3.0/README.md)
 
 ---
 
@@ -149,7 +149,7 @@ Group 07 - Universidade de Aveiro
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v2.5 | Improvement (v2.5 vs v1.0) |
+| Metric | v1.0 | v2.0 | v3 | Improvement (v3 vs v1.0) |
 |--------|------|------|------|---------------------------|
 | **Compression Ratio** | 71.44% | 62.74% | **57.48%** | **-13.96pp (19.5% better)** |
 | **Bits/Symbol** | 5.72 | 5.02 | **4.60** | **-1.12 bits** |
@@ -175,7 +175,7 @@ Group 07 - Universidade de Aveiro
   - Auto-selection algorithm
   - Extensive benchmarking
 - **2026-03-05**: v2.0 released (Multi-model + Range coding)
-- **2026-03-05 - 2026-03-06**: v2.5 development
+- **2026-03-05 - 2026-03-06**: v3 development
   - BWT (Burrows-Wheeler Transform) implementation
   - Suffix array construction
   - Block-based processing (1024-byte blocks)
@@ -183,7 +183,7 @@ Group 07 - Universidade de Aveiro
   - Auto-selection for BWT enable/disable
   - Comprehensive BWT unit testing
   - Integration with existing compression pipeline
-- **2026-03-06**: v2.5 released (BWT preprocessing + Multi-model)
+- **2026-03-06**: v3 released (BWT preprocessing + Multi-model)
 
 ---
 

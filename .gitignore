@@ -7,3 +7,4 @@ obj/
 
 # Generated benchmark results
 benchmarks/tmp*/
+CLAUDE.md

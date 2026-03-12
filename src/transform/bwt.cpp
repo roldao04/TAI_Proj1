@@ -1,6 +1,9 @@
 #include "transform/bwt.h"
+#include "libsais.h"
 #include <algorithm>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 /*
  * BWT Implementation
@@ -108,24 +111,19 @@ BWT::transform(const std::vector<uint8_t>& input) {
         return {std::vector<uint8_t>(), 0};
     }
 
-    uint32_t n = input.size();
-    std::vector<uint32_t> suffix_array = build_suffix_array_prefix_doubling(input);
-
+    int32_t n = static_cast<int32_t>(input.size());
     std::vector<uint8_t> bwt_output(n);
-    uint32_t primary_index = 0;
+    // libsais requires a temporary working buffer of size n
+    std::vector<int32_t> tmp(n);
 
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t suffix_start = suffix_array[i];
+    int32_t primary_index = libsais_bwt(
+        input.data(), bwt_output.data(), tmp.data(), n, 0, nullptr);
 
-        if (suffix_start == 0) {
-            primary_index = i;
-        }
-
-        uint32_t prev_pos = (suffix_start == 0) ? (n - 1) : (suffix_start - 1);
-        bwt_output[i] = input[prev_pos];
+    if (primary_index < 0) {
+        throw std::runtime_error("libsais_bwt failed");
     }
 
-    return {bwt_output, primary_index};
+    return {bwt_output, static_cast<uint32_t>(primary_index)};
 }
 
 // ============================================================================
@@ -138,42 +136,16 @@ BWT::inverse_transform(const std::vector<uint8_t>& bwt_data, uint32_t primary_in
         return std::vector<uint8_t>();
     }
 
-    uint32_t n = bwt_data.size();
-
-    if (primary_index >= n) {
-        throw std::runtime_error("Invalid primary index for BWT inverse transform");
-    }
-
-    std::vector<uint32_t> count(256, 0);
-    for (uint8_t c : bwt_data) {
-        count[c]++;
-    }
-
-    std::vector<uint32_t> cumsum(256, 0);
-    uint32_t sum = 0;
-    for (int i = 0; i < 256; i++) {
-        cumsum[i] = sum;
-        sum += count[i];
-    }
-
-    // Build LF mapping: maps each position in last column to its position in first column
-    std::vector<uint32_t> lf_mapping(n);
-    std::vector<uint32_t> temp_cumsum = cumsum;
-
-    for (uint32_t i = 0; i < n; i++) {
-        uint8_t c = bwt_data[i];
-        lf_mapping[i] = temp_cumsum[c];
-        temp_cumsum[c]++;
-    }
-
-    // Reconstruct original by following LF mapping
+    int32_t n = static_cast<int32_t>(bwt_data.size());
     std::vector<uint8_t> output(n);
-    uint32_t idx = primary_index;
+    std::vector<int32_t> tmp(n + 1);  // libsais requires n+1
 
-    for (uint32_t i = 0; i < n; i++) {
-        uint8_t c = bwt_data[idx];
-        output[n - 1 - i] = c;
-        idx = lf_mapping[idx];
+    int32_t ret = libsais_unbwt(
+        bwt_data.data(), output.data(), tmp.data(), n, nullptr,
+        static_cast<int32_t>(primary_index));
+
+    if (ret != 0) {
+        throw std::runtime_error("libsais_unbwt failed");
     }
 
     return output;
@@ -191,21 +163,42 @@ BWT::transform_blocks(const std::vector<uint8_t>& input, size_t block_size) {
 
     size_t num_blocks = (input.size() + block_size - 1) / block_size;
 
-    std::vector<uint8_t> all_bwt_output;
-    std::vector<uint32_t> all_primary_indices;
+    // Pre-allocate per-block result storage so threads write independently
+    struct BlockResult {
+        std::vector<uint8_t> bwt_output;
+        uint32_t primary_index = 0;
+    };
+    std::vector<BlockResult> results(num_blocks);
 
-    all_bwt_output.reserve(input.size());
-    all_primary_indices.reserve(num_blocks);
+    // Launch one thread per block — blocks are fully independent
+    std::vector<std::thread> threads;
+    threads.reserve(num_blocks);
 
     for (size_t block_idx = 0; block_idx < num_blocks; block_idx++) {
         size_t start = block_idx * block_size;
         size_t end = std::min(start + block_size, input.size());
 
-        std::vector<uint8_t> block(input.begin() + start, input.begin() + end);
-        auto [bwt_output, primary_index] = transform(block);
+        threads.emplace_back([&input, &results, block_idx, start, end]() {
+            std::vector<uint8_t> block(input.begin() + start, input.begin() + end);
+            auto [bwt_out, idx] = BWT::transform(block);
+            results[block_idx].bwt_output = std::move(bwt_out);
+            results[block_idx].primary_index = idx;
+        });
+    }
 
-        all_bwt_output.insert(all_bwt_output.end(), bwt_output.begin(), bwt_output.end());
-        all_primary_indices.push_back(primary_index);
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    // Collect results in original order
+    std::vector<uint8_t> all_bwt_output;
+    std::vector<uint32_t> all_primary_indices;
+    all_bwt_output.reserve(input.size());
+    all_primary_indices.reserve(num_blocks);
+
+    for (auto& r : results) {
+        all_bwt_output.insert(all_bwt_output.end(), r.bwt_output.begin(), r.bwt_output.end());
+        all_primary_indices.push_back(r.primary_index);
     }
 
     return {all_bwt_output, all_primary_indices};
@@ -220,27 +213,31 @@ BWT::inverse_transform_blocks(const std::vector<uint8_t>& bwt_data,
     }
 
     size_t num_blocks = primary_indices.size();
-    std::vector<uint8_t> output;
-    output.reserve(bwt_data.size());
+    std::vector<std::vector<uint8_t>> results(num_blocks);
+
+    // Launch one thread per block — inverse transforms are fully independent
+    std::vector<std::thread> threads;
+    threads.reserve(num_blocks);
 
     for (size_t block_idx = 0; block_idx < num_blocks; block_idx++) {
         size_t start = block_idx * block_size;
         size_t end = std::min(start + block_size, bwt_data.size());
-        size_t current_block_size = end - start;
 
-        if (end > bwt_data.size()) {
-            throw std::runtime_error("BWT block processing error: block boundaries exceed data size");
-        }
+        threads.emplace_back([&bwt_data, &primary_indices, &results, block_idx, start, end]() {
+            std::vector<uint8_t> block_bwt(bwt_data.begin() + start, bwt_data.begin() + end);
+            results[block_idx] = BWT::inverse_transform(block_bwt, primary_indices[block_idx]);
+        });
+    }
 
-        std::vector<uint8_t> block_bwt(bwt_data.begin() + start,
-                                       bwt_data.begin() + end);
+    for (auto& t : threads) {
+        t.join();
+    }
 
-        if (block_bwt.size() != current_block_size) {
-            throw std::runtime_error("BWT block processing error: block size mismatch");
-        }
-
-        std::vector<uint8_t> block_output = inverse_transform(block_bwt, primary_indices[block_idx]);
-        output.insert(output.end(), block_output.begin(), block_output.end());
+    // Collect in order
+    std::vector<uint8_t> output;
+    output.reserve(bwt_data.size());
+    for (auto& r : results) {
+        output.insert(output.end(), r.begin(), r.end());
     }
 
     return output;

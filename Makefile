@@ -2,8 +2,10 @@
 # TAI Project #1 - 2025/26
 
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -I./include
-LDFLAGS =
+CC = gcc
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -march=native -I./include
+CFLAGS = -O3 -march=native -I./include
+LDFLAGS = -lpthread
 
 # Directories
 SRC_DIR = src
@@ -20,11 +22,13 @@ BWT_SRC = $(SRC_DIR)/transform/bwt.cpp
 MTF_SRC = $(SRC_DIR)/transform/mtf.cpp
 ZRLE_SRC = $(SRC_DIR)/transform/zero_rle.cpp
 HEADER_SRC = $(SRC_DIR)/utils/stream_header.cpp
+LIBSAIS_SRC = $(SRC_DIR)/libsais.c
 COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
 DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
 
 # Object files
 RANGE_OBJ = $(OBJ_DIR)/range_coder.o
+LIBSAIS_OBJ = $(OBJ_DIR)/libsais.o
 MODEL_OBJ = $(OBJ_DIR)/frequency_model.o
 CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
 UTILS_OBJ = $(OBJ_DIR)/file_io.o
@@ -37,7 +41,7 @@ COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
 DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
 
 # Common objects (used by both compressor and decompressor)
-COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ)
+COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ) $(LIBSAIS_OBJ)
 
 # Executables
 COMPRESSOR = $(BIN_DIR)/compress
@@ -75,6 +79,9 @@ $(ENTROPY_OBJ): $(ENTROPY_SRC) | $(OBJ_DIR)
 $(BWT_OBJ): $(BWT_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(LIBSAIS_OBJ): $(LIBSAIS_SRC) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(MTF_OBJ): $(MTF_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -98,7 +105,7 @@ $(DECOMPRESSOR): $(DECOMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Test executable
-$(TEST_BWT): tests/test_bwt.cpp $(BWT_OBJ) | $(BIN_DIR)
+$(TEST_BWT): tests/test_bwt.cpp $(BWT_OBJ) $(LIBSAIS_OBJ) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Clean build artifacts

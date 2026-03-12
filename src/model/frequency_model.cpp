@@ -7,12 +7,18 @@ FrequencyModel::FrequencyModel() : total_freq(0) {
     cumulative_freq.fill(0);
 }
 
+static void count_frequencies(const uint8_t* __restrict__ data,
+                               size_t n,
+                               uint32_t* __restrict__ freq) {
+    for (size_t i = 0; i < n; i++) {
+        freq[data[i]]++;
+    }
+}
+
 void FrequencyModel::build_from_data(const std::vector<uint8_t>& data) {
     frequencies.fill(0);
 
-    for (uint8_t byte : data) {
-        frequencies[byte]++;
-    }
+    count_frequencies(data.data(), data.size(), frequencies.data());
 
     frequencies[EOF_SYMBOL] = 1;
 

@@ -2,32 +2,30 @@
 #include <chrono>
 #include <string>
 #include <cstring>
+#include <utility>
 #include "arithmetic/range_coder.h"
 #include "model/frequency_model.h"
 #include "model/context_model.h"
 #include "utils/file_io.h"
 #include "utils/entropy_calculator.h"
+#include "utils/stream_header.h"
 #include "transform/bwt.h"
+#include "transform/mtf.h"
+#include "transform/zero_rle.h"
 
 /*
  * Lossless Data Compressor
  *
  * Compressed file format:
- * - Model type (1 byte): 0=Order-0, 1=Order-1, 3/4=BWT variants, 255=Uncompressed
+ * - Model type (1 byte): legacy tags 0/1/3/4 and extended preprocessing tags 5/6
  * - Original file size (8 bytes, uint64_t)
+ * - Extended preprocessing header (if using MTF and/or ZRLE)
  * - BWT header (if BWT enabled): block count + primary indices
  * - Model data (Order-0 only: frequency table)
  * - Range-coded data
  */
 
-enum class ModelType {
-    ORDER_0 = 0,
-    ORDER_1 = 1,
-    ORDER_2 = 2,
-    ORDER_0_BWT = 3,
-    ORDER_1_BWT = 4,
-    UNCOMPRESSED = 255
-};
+using StreamHeader::ModelType;
 
 void print_usage(const char* program_name) {
     std::cerr << "Usage: " << program_name << " <input_file> <output_file> [OPTIONS]" << std::endl;
@@ -38,6 +36,11 @@ void print_usage(const char* program_name) {
     std::cerr << "\nBWT Preprocessing:" << std::endl;
     std::cerr << "  --bwt             Force BWT preprocessing (improves compression on structured data)" << std::endl;
     std::cerr << "  --no-bwt          Disable BWT preprocessing (default: auto-decided)" << std::endl;
+    std::cerr << "\nPost-BWT Transforms:" << std::endl;
+    std::cerr << "  --mtf             Force Move-to-Front after BWT" << std::endl;
+    std::cerr << "  --no-mtf          Disable Move-to-Front after BWT" << std::endl;
+    std::cerr << "  --zrle            Force zero-run RLE after MTF" << std::endl;
+    std::cerr << "  --no-zrle         Disable zero-run RLE after MTF" << std::endl;
     std::cerr << "\nOther Options:" << std::endl;
     std::cerr << "  --yes, -y         Skip interactive prompts (useful for automation/benchmarks)" << std::endl;
     std::cerr << "\nAuto-selection rules (based on benchmark results):" << std::endl;
@@ -48,6 +51,8 @@ void print_usage(const char* program_name) {
     std::cerr << "\nNotes:" << std::endl;
     std::cerr << "  - Order-1 uses simplified encoding (no PPM Method C exclusions)" << std::endl;
     std::cerr << "  - Order-2 removed (provided no benefit over Order-1)" << std::endl;
+    std::cerr << "  - MTF defaults to enabled when BWT is enabled" << std::endl;
+    std::cerr << "  - ZRLE defaults to auto: enabled only if it shrinks the MTF output" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -63,6 +68,8 @@ int main(int argc, char* argv[]) {
     bool auto_select = true;
     bool force_mode = false;
     int bwt_preference = 0;
+    int mtf_preference = 0;
+    int zrle_preference = 0;
 
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];
@@ -73,6 +80,14 @@ int main(int argc, char* argv[]) {
             bwt_preference = 1;
         } else if (arg == "--no-bwt") {
             bwt_preference = -1;
+        } else if (arg == "--mtf") {
+            mtf_preference = 1;
+        } else if (arg == "--no-mtf") {
+            mtf_preference = -1;
+        } else if (arg == "--zrle") {
+            zrle_preference = 1;
+        } else if (arg == "--no-zrle") {
+            zrle_preference = -1;
         } else if (arg == "--model") {
             if (i + 1 < argc) {
                 std::string model_name = argv[i + 1];
@@ -100,6 +115,10 @@ int main(int argc, char* argv[]) {
                 print_usage(argv[0]);
                 return 1;
             }
+        } else {
+            std::cerr << "Error: Unknown option '" << arg << "'" << std::endl;
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
@@ -154,7 +173,11 @@ int main(int argc, char* argv[]) {
         }
 
         bool use_bwt = false;
+        bool use_mtf = false;
+        bool use_zrle = false;
+        uint8_t transform_flags = 0;
         std::vector<uint32_t> bwt_primary_indices;
+        std::vector<uint8_t> data_to_encode = input_data;
 
         if (model_type != ModelType::UNCOMPRESSED) {
             if (bwt_preference == 1) {
@@ -174,51 +197,97 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            if (use_bwt) {
-                if (model_type == ModelType::ORDER_0) {
-                    model_type = ModelType::ORDER_0_BWT;
-                } else if (model_type == ModelType::ORDER_1) {
-                    model_type = ModelType::ORDER_1_BWT;
+            if (!use_bwt) {
+                if (mtf_preference == 1) {
+                    throw std::runtime_error("--mtf requires BWT preprocessing");
+                }
+                if (zrle_preference == 1) {
+                    throw std::runtime_error("--zrle requires BWT preprocessing");
                 }
             }
         }
 
-        std::vector<uint8_t> output_data;
-
-        output_data.push_back(static_cast<uint8_t>(model_type));
-
         uint64_t original_size = input_data.size();
-        for (int i = 0; i < 8; i++) {
-            output_data.push_back((original_size >> (i * 8)) & 0xFF);
-        }
-
-        std::vector<uint8_t> data_to_encode = input_data;
 
         if (use_bwt) {
+            use_mtf = (mtf_preference != -1);
+            if (zrle_preference == 1) {
+                if (mtf_preference == -1) {
+                    throw std::runtime_error("--zrle requires MTF preprocessing; remove --no-mtf or disable --zrle");
+                }
+                use_mtf = true;
+            }
+
             std::cout << "Applying BWT preprocessing..." << std::endl;
             auto start_bwt = std::chrono::high_resolution_clock::now();
 
             auto [bwt_output, primary_indices] = BWT::transform_blocks(input_data, 900*1024);
-            data_to_encode = bwt_output;
+            data_to_encode = std::move(bwt_output);
             bwt_primary_indices = primary_indices;
+            StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_BWT);
 
             auto end_bwt = std::chrono::high_resolution_clock::now();
             auto bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_bwt - start_bwt).count();
             std::cout << "BWT preprocessing complete (" << bwt_time << " ms)" << std::endl;
             std::cout << "Number of BWT blocks: " << bwt_primary_indices.size() << std::endl;
 
-            uint32_t block_count = bwt_primary_indices.size();
-            for (int i = 0; i < 4; i++) {
-                output_data.push_back((block_count >> (i * 8)) & 0xFF);
+            if (use_mtf) {
+                std::cout << "Applying Move-to-Front transform..." << std::endl;
+                auto start_mtf = std::chrono::high_resolution_clock::now();
+                data_to_encode = MoveToFront::transform_blocks(data_to_encode, 900*1024);
+                auto end_mtf = std::chrono::high_resolution_clock::now();
+                auto mtf_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_mtf - start_mtf).count();
+                std::cout << "Move-to-Front transform complete (" << mtf_time << " ms)" << std::endl;
+                StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_MTF);
             }
-            for (uint32_t idx : bwt_primary_indices) {
-                for (int i = 0; i < 4; i++) {
-                    output_data.push_back((idx >> (i * 8)) & 0xFF);
+
+            if (use_mtf) {
+                std::vector<uint8_t> zrle_candidate = ZeroRunLengthEncoder::encode(data_to_encode);
+                if (zrle_preference == 1 ||
+                    (zrle_preference == 0 && zrle_candidate.size() < data_to_encode.size())) {
+                    use_zrle = true;
+                    std::cout << "Zero-run RLE: ENABLED ("
+                              << data_to_encode.size() << " -> "
+                              << zrle_candidate.size() << " bytes)" << std::endl;
+                    data_to_encode = std::move(zrle_candidate);
+                    StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_ZRLE);
+                } else if (zrle_preference == -1) {
+                    std::cout << "Zero-run RLE: DISABLED (user requested --no-zrle)" << std::endl;
+                } else {
+                    std::cout << "Zero-run RLE: DISABLED (no size reduction after MTF)" << std::endl;
                 }
             }
         }
 
-        if (model_type == ModelType::ORDER_0 || model_type == ModelType::ORDER_0_BWT) {
+        if (zrle_preference == 1 && !use_zrle) {
+            throw std::runtime_error("--zrle could not be enabled because BWT/MTF preprocessing was not active");
+        }
+
+        if (use_bwt && use_mtf) {
+            if (model_type == ModelType::ORDER_0) {
+                model_type = ModelType::ORDER_0_PREPROC;
+            } else if (model_type == ModelType::ORDER_1) {
+                model_type = ModelType::ORDER_1_PREPROC;
+            }
+        } else if (use_bwt) {
+            if (model_type == ModelType::ORDER_0) {
+                model_type = ModelType::ORDER_0_BWT;
+            } else if (model_type == ModelType::ORDER_1) {
+                model_type = ModelType::ORDER_1_BWT;
+            }
+        }
+
+        std::vector<uint8_t> output_data;
+        StreamHeader::write_header(output_data,
+                                   model_type,
+                                   original_size,
+                                   data_to_encode.size(),
+                                   transform_flags,
+                                   bwt_primary_indices);
+
+        if (model_type == ModelType::ORDER_0 ||
+            model_type == ModelType::ORDER_0_BWT ||
+            model_type == ModelType::ORDER_0_PREPROC) {
             std::cout << "Using Order-0 frequency model..." << std::endl;
             std::cout << "Encoding..." << std::endl;
 
@@ -249,9 +318,14 @@ int main(int argc, char* argv[]) {
 
             output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
 
-        } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2 || model_type == ModelType::ORDER_1_BWT) {
-            std::string model_name = (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_1_BWT) ? "Order-1" : "Order-2";
-            std::cout << "Using " << model_name << " adaptive context model..." << std::endl;
+        } else if (model_type == ModelType::ORDER_1 ||
+                   model_type == ModelType::ORDER_2 ||
+                   model_type == ModelType::ORDER_1_BWT ||
+                   model_type == ModelType::ORDER_1_PREPROC) {
+            std::string adaptive_model_name = (model_type == ModelType::ORDER_1 ||
+                                               model_type == ModelType::ORDER_1_BWT ||
+                                               model_type == ModelType::ORDER_1_PREPROC) ? "Order-1" : "Order-2";
+            std::cout << "Using " << adaptive_model_name << " adaptive context model..." << std::endl;
             std::cout << "Encoding with simplified adaptive model..." << std::endl;
 
             ContextModel model;
@@ -289,12 +363,8 @@ int main(int argc, char* argv[]) {
 
         // Statistics
         std::cout << "\n=== Compression Statistics ===" << std::endl;
-        std::string model_name;
-        if (model_type == ModelType::ORDER_0) model_name = "Order-0";
-        else if (model_type == ModelType::ORDER_1) model_name = "Order-1";
-        else if (model_type == ModelType::ORDER_2) model_name = "Order-2";
-        else if (model_type == ModelType::UNCOMPRESSED) model_name = "Uncompressed";
-        std::cout << "Model: " << model_name << std::endl;
+        StreamHeader::Header header_summary{model_type, original_size, data_to_encode.size(), transform_flags, bwt_primary_indices, 0};
+        std::cout << "Model: " << StreamHeader::describe_model_type(header_summary) << std::endl;
         std::cout << "Original size:    " << input_data.size() << " bytes" << std::endl;
         std::cout << "Compressed size:  " << output_data.size() << " bytes" << std::endl;
         std::cout << "Compression ratio: " << (100.0 * output_data.size() / input_data.size()) << "%" << std::endl;

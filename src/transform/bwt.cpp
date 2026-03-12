@@ -1,46 +1,99 @@
 #include "transform/bwt.h"
 #include <algorithm>
 #include <stdexcept>
-#include <cstring>
 
 /*
  * BWT Implementation
  *
- * Uses naive O(n²log n) suffix array construction for cyclic rotations.
- * Block-based processing for large files (900KB blocks, similar to bzip2).
+ * Uses O(n log n) prefix-doubling suffix array construction for cyclic
+ * rotations. Block-based processing for large files (900KB blocks,
+ * similar to bzip2).
  */
 
 // ============================================================================
 // Suffix Array Construction
 // ============================================================================
 
-std::vector<uint32_t> BWT::build_suffix_array_naive(const std::vector<uint8_t>& data) {
+std::vector<uint32_t> BWT::build_suffix_array_prefix_doubling(const std::vector<uint8_t>& data) {
     if (data.empty()) {
         return std::vector<uint32_t>();
     }
 
     uint32_t n = data.size();
     std::vector<uint32_t> suffix_array(n);
+    std::vector<uint32_t> equivalence_class(n);
+    std::vector<uint32_t> next_suffix_array(n);
+    std::vector<uint32_t> next_equivalence_class(n);
+    std::vector<uint32_t> count(std::max<size_t>(256, n), 0);
 
     for (uint32_t i = 0; i < n; i++) {
-        suffix_array[i] = i;
+        count[data[i]]++;
     }
 
-    // Sort cyclic rotations lexicographically (key difference from standard suffix array)
-    std::sort(suffix_array.begin(), suffix_array.end(),
-        [&data, n](uint32_t i, uint32_t j) {
-            for (uint32_t k = 0; k < n; k++) {
-                uint8_t char_i = data[(i + k) % n];
-                uint8_t char_j = data[(j + k) % n];
+    for (size_t i = 1; i < 256; i++) {
+        count[i] += count[i - 1];
+    }
 
-                if (char_i < char_j) {
-                    return true;
-                } else if (char_i > char_j) {
-                    return false;
-                }
+    for (int i = static_cast<int>(n) - 1; i >= 0; i--) {
+        uint8_t byte = data[i];
+        suffix_array[--count[byte]] = i;
+    }
+
+    equivalence_class[suffix_array[0]] = 0;
+    uint32_t class_count = 1;
+    for (uint32_t i = 1; i < n; i++) {
+        if (data[suffix_array[i]] != data[suffix_array[i - 1]]) {
+            class_count++;
+        }
+        equivalence_class[suffix_array[i]] = class_count - 1;
+    }
+
+    for (uint32_t shift = 1; shift < n; shift <<= 1) {
+        for (uint32_t i = 0; i < n; i++) {
+            next_suffix_array[i] = (suffix_array[i] + n - shift) % n;
+        }
+
+        std::fill(count.begin(), count.begin() + class_count, 0);
+        for (uint32_t i = 0; i < n; i++) {
+            count[equivalence_class[next_suffix_array[i]]]++;
+        }
+        for (uint32_t i = 1; i < class_count; i++) {
+            count[i] += count[i - 1];
+        }
+        for (int i = static_cast<int>(n) - 1; i >= 0; i--) {
+            uint32_t start = next_suffix_array[i];
+            uint32_t current_class = equivalence_class[start];
+            suffix_array[--count[current_class]] = start;
+        }
+
+        next_equivalence_class[suffix_array[0]] = 0;
+        uint32_t next_class_count = 1;
+        for (uint32_t i = 1; i < n; i++) {
+            uint32_t current = suffix_array[i];
+            uint32_t previous = suffix_array[i - 1];
+
+            std::pair<uint32_t, uint32_t> current_pair = {
+                equivalence_class[current],
+                equivalence_class[(current + shift) % n]
+            };
+            std::pair<uint32_t, uint32_t> previous_pair = {
+                equivalence_class[previous],
+                equivalence_class[(previous + shift) % n]
+            };
+
+            if (current_pair != previous_pair) {
+                next_class_count++;
             }
-            return false;
-        });
+            next_equivalence_class[current] = next_class_count - 1;
+        }
+
+        equivalence_class.swap(next_equivalence_class);
+        class_count = next_class_count;
+
+        if (class_count == n) {
+            break;
+        }
+    }
 
     return suffix_array;
 }
@@ -56,7 +109,7 @@ BWT::transform(const std::vector<uint8_t>& input) {
     }
 
     uint32_t n = input.size();
-    std::vector<uint32_t> suffix_array = build_suffix_array_naive(input);
+    std::vector<uint32_t> suffix_array = build_suffix_array_prefix_doubling(input);
 
     std::vector<uint8_t> bwt_output(n);
     uint32_t primary_index = 0;
@@ -198,7 +251,7 @@ BWT::inverse_transform_blocks(const std::vector<uint8_t>& bwt_data,
 // ============================================================================
 
 bool BWT::validate_suffix_array(const std::vector<uint8_t>& data,
-                                 const std::vector<uint32_t>& sa) {
+                                const std::vector<uint32_t>& sa) {
     uint32_t n = data.size();
 
     if (sa.size() != n) {
@@ -214,21 +267,20 @@ bool BWT::validate_suffix_array(const std::vector<uint8_t>& data,
     }
 
     for (uint32_t i = 1; i < n; i++) {
-        uint32_t prev_suffix = sa[i-1];
+        uint32_t prev_suffix = sa[i - 1];
         uint32_t curr_suffix = sa[i];
 
-        uint32_t len_prev = n - prev_suffix;
-        uint32_t len_curr = n - curr_suffix;
-        uint32_t min_len = std::min(len_prev, len_curr);
+        for (uint32_t offset = 0; offset < n; offset++) {
+            uint8_t prev_char = data[(prev_suffix + offset) % n];
+            uint8_t curr_char = data[(curr_suffix + offset) % n];
 
-        int cmp = std::memcmp(&data[prev_suffix], &data[curr_suffix], min_len);
+            if (prev_char < curr_char) {
+                break;
+            }
 
-        if (cmp > 0) {
-            return false;
-        }
-
-        if (cmp == 0 && len_prev > len_curr) {
-            return false;
+            if (prev_char > curr_char) {
+                return false;
+            }
         }
     }
 

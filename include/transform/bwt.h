@@ -132,55 +132,21 @@ public:
                                  size_t block_size = 900*1024);
 
     /*
-     * Build Suffix Array (Naive Implementation)
+     * Build Cyclic Suffix Array (Prefix-Doubling)
      *
-     * Constructs suffix array using straightforward O(n²log n) approach.
-     * Used in Phase 1 for correctness, then replaced by SA-IS.
-     *
-     * Algorithm:
-     * 1. Generate all suffix indices (0 to n-1)
-     * 2. Sort them using std::sort with custom comparator
-     * 3. Comparator compares suffixes lexicographically
+     * Constructs the lexicographic order of all cyclic rotations using
+     * the standard prefix-doubling algorithm for cyclic shifts.
      *
      * Parameters:
      *   data - Input data
      *
      * Returns:
-     *   Suffix array (indices into data)
+     *   Array of rotation start indices in sorted order
      *
-     * Time Complexity: O(n²log n) - comparison is O(n), done O(n log n) times
+     * Time Complexity: O(n log n)
      * Space Complexity: O(n)
-     *
-     * Note: This is simple but slow. Will be replaced by SA-IS for O(n) time.
      */
-    static std::vector<uint32_t> build_suffix_array_naive(const std::vector<uint8_t>& data);
-
-    /*
-     * Build Suffix Array (SA-IS Algorithm)
-     *
-     * Linear-time suffix array construction using Induced Sorting.
-     * Significantly faster than naive approach, especially for large blocks.
-     *
-     * Algorithm (simplified):
-     * 1. Classify suffixes as S-type or L-type
-     * 2. Find LMS (Left-Most S-type) substrings
-     * 3. Sort LMS substrings
-     * 4. Induce sort remaining suffixes
-     * 5. Recursively solve if needed
-     *
-     * Parameters:
-     *   data - Input data
-     *
-     * Returns:
-     *   Suffix array (indices into data)
-     *
-     * Time Complexity: O(n)
-     * Space Complexity: O(n)
-     *
-     * Reference: Nong, Zhang, Chan (2009)
-     * Note: Complex algorithm, will implement in Phase 2
-     */
-    static std::vector<uint32_t> build_suffix_array_sais(const std::vector<uint8_t>& data);
+    static std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& data);
 
 private:
     /*

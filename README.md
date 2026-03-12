@@ -14,6 +14,8 @@
 
 This project implements a lossless data compression tool using:
 - **Burrows-Wheeler Transform (BWT)** for preprocessing (block-based, improves compression on repetitive data)
+- **Move-to-Front (MTF)** after BWT to convert clustered symbols into low-rank bytes
+- **Optional zero-run RLE** after MTF to compact long runs of zeros
 - **Range Coding** for entropy coding (faster than arithmetic coding)
 - **Multi-Model System** with intelligent auto-selection:
   - **Order-0** frequency model (static, fast, universal)
@@ -31,7 +33,7 @@ project_1/
 ├── src/
 │   ├── arithmetic/         # Range coder (entropy encoding)
 │   ├── model/             # Frequency models (Order-0, Order-1)
-│   ├── transform/         # BWT (Burrows-Wheeler Transform)
+│   ├── transform/         # BWT, MTF, and zero-run preprocessing
 │   ├── utils/             # File I/O and entropy calculation
 │   ├── compressor.cpp     # Main compression program
 │   └── decompressor.cpp   # Main decompression program
@@ -81,6 +83,10 @@ make clean
   - `order1` - Force Order-1 context model (better compression for low-entropy data)
 - `--bwt` - Force BWT preprocessing (even if auto-selection says no)
 - `--no-bwt` - Disable BWT preprocessing (revert to v2.0 behavior)
+- `--mtf` - Force Move-to-Front after BWT (default: enabled whenever BWT is enabled)
+- `--no-mtf` - Disable Move-to-Front after BWT
+- `--zrle` - Force zero-run RLE after MTF
+- `--no-zrle` - Disable zero-run RLE after MTF (default: auto-enable only if it shrinks the MTF stream)
 - `--yes, -y` - Skip interactive prompts (useful for automation/benchmarks)
 
 **Examples:**
@@ -88,8 +94,11 @@ make clean
 # Auto-selection (recommended - auto-selects model and BWT)
 ./bin/compress data/test.txt data/test.compressed
 
-# Force BWT + Order-1 (maximum compression on text)
-./bin/compress data/test.txt data/test.compressed --model order1 --bwt
+# Force BWT + MTF + Order-1 (maximum compression on text)
+./bin/compress data/test.txt data/test.compressed --model order1 --bwt --mtf
+
+# Force BWT + MTF + zero-run RLE
+./bin/compress data/test.txt data/test.compressed --model order1 --bwt --mtf --zrle
 
 # Disable BWT for speed
 ./bin/compress data/test.txt data/test.compressed --no-bwt
@@ -100,7 +109,7 @@ make clean
 
 **Auto-Selection Rules:**
 - **BWT Selection:**
-  - Enabled when entropy < 6.5 and file size >= 1024 bytes
+  - Enabled when entropy < 6.5 and file size > 10240 bytes
   - Disabled for high-entropy or very small files
 - **Model Selection:**
   - Entropy > 7.5 → Store uncompressed (incompressible data)
@@ -177,19 +186,32 @@ This compares G07 against gzip, bzip2, xz, and zstd on a single file.
 ### Compressed File Format
 
 ```
-| Model Type | Original Size | BWT Flag | BWT Indices | Model Data | Encoded Data |
-| (1 byte)   | (8 bytes)     | (1 byte) | (varies)    | (varies)   | (variable)   |
+| Model Type | Original Size | Optional Transform Header | BWT Indices | Model Data | Encoded Data |
+| (1 byte)   | (8 bytes)     | (flags + preproc size)    | (varies)    | (varies)   | (variable)   |
 ```
 
-- **Model Type**: 0 = Order-0, 1 = Order-1, 255 = Uncompressed
+- **Model Type**:
+  - `0` = Order-0
+  - `1` = Order-1
+  - `3` = Order-0 + BWT (legacy format)
+  - `4` = Order-1 + BWT (legacy format)
+  - `5` = Order-0 + extended preprocessing header
+  - `6` = Order-1 + extended preprocessing header
+  - `255` = Uncompressed
 - **Original Size**: uint64_t, little-endian
-- **BWT Flag**: 0x00 = no BWT, 0x01 = BWT enabled
-- **BWT Indices**: If BWT enabled, primary indices for each 1024-byte block (4 bytes each)
+- **Optional Transform Header** (for model types `5` and `6`):
+  - `transform_flags` (1 byte): bit0 = BWT, bit1 = MTF, bit2 = zero-run RLE
+  - `preprocessed_size` (8 bytes): byte count after all preprocessing, before range coding
+- **BWT Indices**: If BWT is enabled, store the block count followed by one primary index per 900KB block (4 bytes each)
 - **Model Data**:
   - Order-0: 257 × uint32_t frequency table (1028 bytes)
   - Order-1: No data stored (adaptive model builds during decode)
   - Uncompressed: No data
 - **Encoded Data**: Range-coded bitstream (or raw data if uncompressed)
+
+**Current preprocessing pipeline:**
+- Legacy BWT streams: `input -> BWT -> model -> range coder`
+- Extended streams: `input -> BWT -> MTF -> optional zero-run RLE -> model -> range coder`
 
 ### Range Coding
 
@@ -221,13 +243,26 @@ Features:
 
 ### Burrows-Wheeler Transform (BWT)
 
-- Block-based preprocessing (1024-byte blocks)
+- Block-based preprocessing (900KB blocks)
 - Reversible transformation that groups similar characters
 - Suffix array construction for forward transform
 - LF mapping for efficient inverse transform
-- Auto-enabled for entropy < 6.5 and file size >= 1KB
+- Auto-enabled for entropy < 6.5 and file size > 10KB
 - Improves compression by 8-20% on text and structured data
 - Seamlessly integrated with range coding and models
+
+### Move-to-Front (MTF)
+
+- Applied after BWT unless `--no-mtf` is used
+- Converts each byte into its current rank in a dynamic 256-symbol list
+- Produces many low-valued bytes after BWT clusters similar symbols together
+- Resets its state at each BWT block boundary
+
+### Zero-Run RLE
+
+- Applied after MTF when requested, or automatically when it shrinks the MTF stream
+- Compresses long runs of MTF zeros using an escaped marker scheme
+- Reversed before inverse MTF during decompression
 
 ---
 
@@ -270,9 +305,9 @@ See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history an
 
 Potential enhancements (see [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md#future-improvements) for details):
 1. **Variable BWT Block Size**: Adaptive block size selection (1KB - 4KB)
-2. **Move-to-Front Transform**: Additional transform after BWT (used in bzip2)
-3. **Parallel BWT Processing**: Multi-threaded block processing
-4. **Run-Length Encoding**: Pre-process runs after BWT
+2. **Parallel BWT Processing**: Multi-threaded block processing
+3. **Order-1 Model Optimization**: Replace `std::map` contexts with denser structures
+4. **Better Escape Handling**: Improve Order-1 fallback and exclusion heuristics
 5. **Streaming Mode**: Support for files larger than RAM
 
 **Note**: Order-2 model was tested and removed after benchmarks showed no benefit over Order-1.

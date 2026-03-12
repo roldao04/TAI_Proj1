@@ -17,6 +17,9 @@ CONTEXT_SRC = $(SRC_DIR)/model/context_model.cpp
 UTILS_SRC = $(SRC_DIR)/utils/file_io.cpp
 ENTROPY_SRC = $(SRC_DIR)/utils/entropy_calculator.cpp
 BWT_SRC = $(SRC_DIR)/transform/bwt.cpp
+MTF_SRC = $(SRC_DIR)/transform/mtf.cpp
+ZRLE_SRC = $(SRC_DIR)/transform/zero_rle.cpp
+HEADER_SRC = $(SRC_DIR)/utils/stream_header.cpp
 COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
 DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
 
@@ -27,11 +30,14 @@ CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
 UTILS_OBJ = $(OBJ_DIR)/file_io.o
 ENTROPY_OBJ = $(OBJ_DIR)/entropy_calculator.o
 BWT_OBJ = $(OBJ_DIR)/bwt.o
+MTF_OBJ = $(OBJ_DIR)/mtf.o
+ZRLE_OBJ = $(OBJ_DIR)/zero_rle.o
+HEADER_OBJ = $(OBJ_DIR)/stream_header.o
 COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
 DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
 
 # Common objects (used by both compressor and decompressor)
-COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ)
+COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ)
 
 # Executables
 COMPRESSOR = $(BIN_DIR)/compress
@@ -67,6 +73,15 @@ $(ENTROPY_OBJ): $(ENTROPY_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BWT_OBJ): $(BWT_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(MTF_OBJ): $(MTF_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(ZRLE_OBJ): $(ZRLE_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(HEADER_OBJ): $(HEADER_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(COMPRESSOR_OBJ): $(COMPRESSOR_SRC) | $(OBJ_DIR)

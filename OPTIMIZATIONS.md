@@ -114,7 +114,58 @@ The inverse BWT (decompression) is unchanged — it already uses O(n) LF-mapping
 
 ---
 
-## Optimization 4: Parallel block processing with std::thread
+## Optimization 5: Flat array Order-1 context model (replacing std::map + dirty cache)
+
+**Files changed:** `src/model/context_model.cpp`, `include/model/context_model.h`
+
+### Why
+After adding libsais and parallel blocks, profiling revealed that 99% of compression time was still spent inside the Order-1 context model. File H (1 MB) took 6,594 ms total with only 68 ms in BWT+MTF — meaning ~6,500 ms in the encoder.
+
+The root cause: each of the 256 order-1 contexts stored its frequencies in a `std::map<int, uint32_t>`. On every symbol encoded (~700K times for file H), the model:
+1. Did a tree traversal through the map (pointer chasing, cache misses per node)
+2. Called `invalidate_cache()` marking a sorted vector dirty
+3. Called `ensure_cache_valid()` which re-sorted the symbol list and rebuilt a cumulative array from scratch
+4. Did `std::lower_bound` binary search on the rebuilt cache
+
+This is O(k log k) per symbol with terrible cache behavior — the map nodes are heap-allocated and scattered across memory.
+
+### Research / Logic
+The fix is well-known in compression literature: replace sparse symbol maps with a flat array over the full alphabet. With only 258 possible symbols (bytes 0–255 + escape + EOF), a flat `uint32_t[258]` per context costs 1 KB and fits entirely in L1 cache. All operations become:
+- `get_symbol_range(sym)`: linear prefix sum over at most 258 `uint32_t` — vectorizable with AVX2 (8 values per cycle)
+- `find_symbol(cum)`: linear scan over 258 values — same
+- `update(byte)`: two array writes, two counter increments — O(1)
+
+No maps, no trees, no cache rebuild, no sorting. Total model memory: `256 × 258 × 4 = 264 KB` — fits in L2.
+
+### How
+Rewrote `ContextModel` internals completely while keeping the public API identical (same method signatures, same `EncodingStep` struct). Key changes:
+
+```cpp
+// Before: one heap-allocated std::map per context (256 contexts)
+std::array<std::unique_ptr<Context>, 256> order1_contexts;
+// Context::frequencies = std::map<int, uint32_t>
+// Context::cached_symbols, cached_cumulative, cumulative_dirty
+
+// After: flat 2D arrays
+uint32_t freq1_[256][258];   // [context][symbol]
+uint32_t total1_[256];
+uint32_t seen1_[256];        // unique non-escape bytes per context (for escape freq)
+bool     ctx_exists_[256];   // lazy init flag
+```
+
+Escape frequency maintained as `max(1, seen_count/4)` to match original PPM behaviour exactly — same compression ratios, same encoder/decoder compatibility.
+
+### Result
+
+| File | Before | After | Speedup |
+|------|--------|-------|---------|
+| H (1 MB) | 6,594 ms | 96 ms | **69×** |
+| C (2 MB) | 2,614 ms | 83 ms | **31×** |
+| G (2.5 MB) | 3,357 ms | 117 ms | **29×** |
+
+---
+
+## Optimization 4 (renumbered): Parallel block processing with std::thread
 
 **Files changed:** `src/transform/bwt.cpp`
 

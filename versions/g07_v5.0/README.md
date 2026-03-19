@@ -8,16 +8,20 @@
 
 ## Overview
 
-Version 5.0 is a performance-focused release that attacks both compression and decompression speed across the entire pipeline. Five targeted changes were made; all five provided measurable, real-world gains. Compression ratios are unchanged from v4.0.
+Version 5.0 is a performance-focused release that attacks both compression and decompression speed across the entire pipeline. Seven targeted changes were made; all provided measurable, real-world gains.
 
 **Compression-side changes:**
-- **Full pipeline independence per block** — a pbzip2-style design where each 900 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own thread simultaneously, replacing the v4.0 approach of parallelising only BWT then running MTF/ZRLE/encode sequentially.
+- **Full pipeline independence per block** — a pbzip2-style design where each 600 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own thread simultaneously, replacing the v4.0 approach of parallelising only BWT then running MTF/ZRLE/encode sequentially.
 - **Allocation-free symbol encoding** (`encode_symbol_fast`) — fixed-size stack struct replaces `std::vector<EncodingStep>`, eliminating ~900,000 heap allocations per block.
 - **rANS entropy coder** — ryg's Asymmetric Numeral Systems (rANS) replaces the Schindler range coder for the static Order-0 path (files E and F). Decode uses a flat lookup table with zero integer divisions per symbol vs the range coder's two divisions.
+- **600 KB block size** — reduced from 900 KB; produces more blocks (more threads) at negligible compression ratio cost, giving 1.3–1.5× speedup across all Order-1 files.
 
 **Decompression-side changes:**
 - **`find_symbol_and_get_range`** — fuses two separate O(258) scans into one, cutting the per-symbol scan work in half.
 - **Decode loop restructuring** — eliminates the inner `while` loop, `symbol_found` flag, and `current_order` variable; replaces with direct `if/else` branches with inline accessors, enabling better branch prediction and compiler optimisation.
+
+**Build system:**
+- **`-flto=auto`** — link-time optimisation allows the compiler to inline and optimise across translation unit boundaries; cross-module hot paths (rANS encode, range coder, context model) are fully inlined at link time.
 
 ---
 
@@ -30,10 +34,14 @@ Version 5.0 is a performance-focused release that attacks both compression and d
 3. **`find_symbol_and_get_range`** — fused decode helper: finds symbol AND fills `lo`/`hi`/`total` in one scan instead of two
 4. **Decode loop restructuring** — flat `if/else` branches, inline accessors (`has_order1_context`, `get_order1_total`, `get_order0_total`), `total_freq` hoisted out of Order-0 loop
 5. **rANS Order-0** — ryg's rANS replaces Schindler's range coder for the static Order-0 path; new `RANS_ORDER_0` (0x08) file format; decode uses a flat 16384-slot lookup table
+6. **600 KB block size** — reduced from 900 KB; 1.3–1.5× speedup from more blocks in parallel; ratio cost ≤0.4pp on A/B/C/G, +0.9pp on H
+7. **`-flto=auto`** — link-time optimisation; cross-module inlining of hot paths; −30% on E compress, marginal elsewhere
 
 ### Ideas Tested That Did Not Provide Real Value
 
-6. **Prefix-sum arrays** — maintaining cumulative frequency arrays for O(1) `get_symbol_range` and O(log N) `find_symbol`; made things 21% *slower* due to cache pressure (see below)
+8. **Prefix-sum arrays** — maintaining cumulative frequency arrays for O(1) `get_symbol_range` and O(log N) `find_symbol`; made things 21% *slower* due to cache pressure (see below)
+9. **`-funroll-loops`** — loop unrolling of the 258-element scan loops; bloated the rANS decode loop body against the 16 KB lookup table, causing instruction cache eviction; E decompress degraded 10ms → 18ms; dropped
+10. **Profile-guided optimisation (PGO)** — training run + `-fprofile-use` rebuild; helped B decompress (−21%) and A decompress (−11%) but regressed E/F rANS paths by +20–64%; net negative; reverted to LTO-only
 
 ---
 
@@ -460,6 +468,94 @@ Total header overhead: 1 + 8 + 1 + 514 = **524 bytes** (vs 1 + 8 + 1028 = 1037 b
 | F    | 2.0 MB | 91 ms | **20 ms (4.6×)** | 126 ms | **23 ms (5.5×)** |
 
 Files A/B/C/G/H are unaffected (they use the Order-1 adaptive pipeline, incompatible with rANS).
+
+---
+
+### 6. 600 KB Block Size — More Parallelism for Free
+
+**Files changed:** `src/compressor.cpp`, `src/decompressor.cpp`
+
+#### Motivation
+
+The parallel pipeline spawns one thread per block. With 900 KB blocks on a 2.5 MB file, only 3 threads are spawned, using 3 of 24 available logical CPUs (12%). The BWT is the dominant cost per block, and it scales linearly with block size.
+
+Reducing the block size increases the number of blocks, which increases thread count, which improves CPU utilisation — at the cost of slightly worse compression (BWT has less context per block).
+
+#### Block Size Sweep
+
+All 5 Order-1 files benchmarked across 6 block sizes (900KB down to 100KB):
+
+| Block | Avg compress speedup vs 900KB | Avg ratio loss |
+|-------|------------------------------|----------------|
+| 600 KB | **1.3–1.5×** | ≤0.4pp (H: +0.9pp) |
+| 450 KB | 1.6–1.8× | ≤0.8pp (H: +1.0pp) |
+| 300 KB | 2.0–2.6× | ≤1.4pp (H: +1.9pp) |
+| 150 KB | 1.6–3.5× | ≤3.2pp (H: +3.1pp) |
+| 100 KB | 2.0–5.3× | ≤4.1pp (H: +3.9pp) |
+
+Below 300 KB, ratio degrades fast with diminishing speed returns — blocks become too small for BWT to find long-range correlations, and per-block overhead (thread spawn, header metadata) becomes significant. The speed curve also flattens because BWT setup cost doesn't scale proportionally with size.
+
+**600 KB is the knee of the curve**: meaningful speedup, virtually free on ratio for most files.
+
+#### Per-File Results (900KB → 600KB)
+
+| File | Compress | Decompress | Ratio Δ |
+|------|----------|------------|---------|
+| A | 74ms → **60ms (1.2×)** | 46ms → **35ms (1.3×)** | 0.0pp |
+| B | 45ms → **31ms (1.5×)** | 35ms → **26ms (1.3×)** | +0.2pp |
+| C | 47ms → **39ms (1.2×)** | 42ms → **30ms (1.4×)** | +0.4pp |
+| G | 71ms → **53ms (1.3×)** | 41ms → **32ms (1.3×)** | +0.1pp |
+| H | 81ms → **55ms (1.5×)** | 82ms → **62ms (1.3×)** | +0.9pp |
+
+File H sees the highest ratio cost because its data (entropy 3.26) has long-range structure that BWT exploits best with larger blocks. Even so, +0.9pp is acceptable given the 1.5× speedup.
+
+#### Change
+
+```cpp
+// src/compressor.cpp — parallel pipeline block size
+const size_t BLOCK_SIZE = 600 * 1024;  // was 900 * 1024
+
+// src/compressor.cpp — sequential BWT path
+BWT::transform_blocks(input_data, 600*1024);       // was 900*1024
+MoveToFront::transform_blocks(data, 600*1024);     // was 900*1024
+
+// src/decompressor.cpp — sequential inverse path
+MoveToFront::inverse_transform_blocks(data, 600*1024);          // was 900*1024
+BWT::inverse_transform_blocks(data, indices, 600*1024);         // was 900*1024
+```
+
+The parallel decompressor reads block sizes from the per-block header metadata and requires no change.
+
+---
+
+### 7. `-flto=auto` — Link-Time Optimisation
+
+**Files changed:** `Makefile`
+
+#### What LTO Does
+
+By default, GCC compiles each `.cpp` file independently. The compiler cannot see across translation unit boundaries, so it cannot inline functions from other `.cpp` files. Hot paths that cross files — such as the compressor calling `encode_symbol_fast` in `context_model.cpp`, which calls `get_symbol_range`, or the rANS encode path calling `RansEncPut` from `rans_byte.h` through `rans_static.cpp` — are compiled as true function calls with call/return overhead.
+
+With `-flto=auto`, GCC defers final code generation to the linker. At link time, all translation units are visible simultaneously, and the compiler performs a full inter-procedural optimisation pass: inlining, constant propagation, and dead code elimination across the entire program.
+
+#### Change
+
+```makefile
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -march=native -flto=auto -I./include
+CFLAGS   = -O3 -march=native -flto=auto -I./include
+LDFLAGS  = -lpthread -flto=auto
+```
+
+#### Results
+
+| File | Before LTO | After LTO | Delta |
+|------|-----------|-----------|-------|
+| E compress | 13ms | **9ms** | **−30%** |
+| F decompress | 23ms | **21ms** | −9% |
+| A decompress | 46ms | **~43ms** | −7% |
+| B–H compress/decompress | ~flat | ~flat | — |
+
+The E compress gain (−30%) comes from the rANS encode path being fully inlined: `RansEncPut` (in `rans_byte.h`, used via `rans_static.cpp`) is now inlined directly into the compressor's encode loop, eliminating function call overhead on every symbol. The Order-1 files are BWT-dominated, so cross-module inlining of the range coder provides minimal benefit.
 
 ---
 

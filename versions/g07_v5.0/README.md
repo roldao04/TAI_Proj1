@@ -569,23 +569,23 @@ All times measured on Linux 6.19.6, x86-64, 8-core CPU. Best of 3 runs, wall-clo
 
 | File | Size | Blocks | v4.0 Compress | v5.0 Compress | Speedup |
 |------|------|--------|---------------|---------------|---------|
-| G    | 2.5 MB | 3 | 117 ms | **~62 ms** | **1.89×** |
-| H    | 1.0 MB | 2 | 96 ms  | **~78 ms** | **1.23×** |
-| A    | 1.3 MB | 2 | 101 ms | **~67 ms** | **1.51×** |
-| B    | 1.2 MB | 2 | 68 ms  | **~39 ms** | **1.74×** |
-| C    | 2.0 MB | 3 | 96 ms  | **~45 ms** | **2.13×** |
+| G    | 2.5 MB | 5 | 117 ms | **~53 ms** | **2.2×** |
+| H    | 1.0 MB | 2 | 96 ms  | **~55 ms** | **1.7×** |
+| A    | 1.3 MB | 3 | 101 ms | **~60 ms** | **1.7×** |
+| B    | 1.2 MB | 2 | 68 ms  | **~31 ms** | **2.2×** |
+| C    | 2.0 MB | 4 | 96 ms  | **~39 ms** | **2.5×** |
 
 #### Decompression (v4.0 → v5.0 + rANS, vs industry tools)
 
 | File | Model | v4.0 | v5.0 | Improvement | gzip | bzip2 |
 |------|-------|------|------|-------------|------|-------|
-| A    | Parallel Order-1 | 63 ms | **~43 ms** | −32% | 16 ms | 60 ms |
-| B    | Parallel Order-1 | 43 ms | **~32 ms** | −26% | 9 ms | 31 ms |
-| C    | Parallel Order-1 | 48 ms | **~34 ms** | −29% | 15 ms | 60 ms |
-| E    | **rANS Order-0** | 55 ms | **~10 ms** | **−82%** | 16 ms | 61 ms |
-| F    | **rANS Order-0** | 126 ms | **~23 ms** | **−82%** | 19 ms | 112 ms |
-| G    | Parallel Order-1 | 43 ms | **~34 ms** | −21% | 18 ms | 82 ms |
-| H    | Parallel Order-1 | 97 ms | **~76 ms** | −22% | 13 ms | 51 ms |
+| A    | Parallel Order-1 | 63 ms | **~35 ms** | −44% | 16 ms | 60 ms |
+| B    | Parallel Order-1 | 43 ms | **~26 ms** | −40% | 9 ms | 31 ms |
+| C    | Parallel Order-1 | 48 ms | **~30 ms** | −38% | 15 ms | 60 ms |
+| E    | **rANS Order-0** | 55 ms | **~11 ms** | **−80%** | 16 ms | 61 ms |
+| F    | **rANS Order-0** | 126 ms | **~21 ms** | **−83%** | 19 ms | 112 ms |
+| G    | Parallel Order-1 | 43 ms | **~32 ms** | −26% | 18 ms | 82 ms |
+| H    | Parallel Order-1 | 97 ms | **~62 ms** | −36% | 13 ms | 51 ms |
 
 **g07 v5.0 now beats bzip2 on all 7 files. Files E and F beat gzip on decompression.**
 
@@ -648,6 +648,48 @@ The extra arrays also doubled the working set: the context model grew from ~264 
 
 **Lesson:** Profile before optimizing inner loops. "O(N) scan" is only expensive if N is large on the actual data — after BWT+MTF, symbol distribution is so skewed that the average scan length is ~5, not 258.
 
+### `-funroll-loops`
+
+**Hypothesis:** The 258-element scan loops in `find_symbol_and_get_range` and `cumulative_before` are the inner hot loop. Unrolling them reduces loop counter overhead and gives the CPU more independent instructions to execute in parallel.
+
+**Result:** E decompression: 10ms → 18ms (+80%). F and H also regressed. A/B/C/G flat.
+
+**Why it failed:** The rANS decode loop is tight and already benefits from the 16 KB decode table fitting in L1 cache. Unrolling the loop body substantially increases the code size of the decode function. This pushes instruction cache lines out, causing L1-I misses on the very loop the unrolling was meant to accelerate. The 16 KB data table + enlarged code no longer fits cleanly in L1.
+
+The Order-1 scan loops were not significantly affected because their working set is already larger (the 258-element scan pulls from the 264 KB context model in L2).
+
+**Fix:** `-funroll-loops` dropped. LTO alone retained.
+
+### Profile-Guided Optimisation (PGO)
+
+**Hypothesis:** PGO teaches the compiler real branch frequencies and hot paths from actual execution. The compiler can then improve code layout (keeping hot code contiguous in memory), branch prediction hints, and inlining decisions based on observed call frequencies.
+
+**What was tried:**
+
+1. Built with `-fprofile-generate`
+2. Ran compress + decompress on all 8 files twice to build a representative profile
+3. Rebuilt with `-fprofile-use -fprofile-correction -flto=auto`
+
+**Result:**
+
+| File | LTO only | LTO + PGO | Delta |
+|------|----------|-----------|-------|
+| A decompress | 46ms | **41ms** | −11% |
+| B compress | 46ms | **40ms** | −13% |
+| B decompress | 35ms | **30ms** | −21% |
+| H compress | 64ms | 81ms | **+27%** ⚠️ |
+| E decompress | 11ms | 18ms | **+64%** ⚠️ |
+| F compress | 22ms | 27ms | **+23%** ⚠️ |
+| F decompress | 21ms | 25ms | **+19%** ⚠️ |
+
+**Why it failed overall:**
+
+The profile was collected under instrumentation overhead, which significantly distorts timing-relative behaviour. The rANS decode loop — which in the optimised binary is extremely tight (single multiply, shift, array lookup, branch) — appears different under instrumentation because the instrumentation probes add memory writes around every basic block. The resulting profile tells the compiler to optimise for a code shape that doesn't match the real binary.
+
+Additionally, the training set is unbalanced: files E and F contribute fewer total symbols (high-entropy, barely compressible; 1–2 MB at ~7 bits/symbol) vs the Order-1 files (heavily compressed; far more range-coder symbols processed per byte). PGO weights the Order-1 path more heavily and makes decisions that hurt the rANS path.
+
+**Fix:** PGO reverted. LTO-only retained as the final build configuration.
+
 ### AVX2 Array Bounds Trap (Side Note)
 
 While debugging the prefix-sum performance regression, the code was briefly believed to have an AVX2 overwrite bug. GCC's auto-vectorizer emits 256-bit (8-element) store instructions that can write up to 7 elements past the last valid index. Since `cum0_[259]` was used (258 + 1 slot for total), the suffix update loop could write up to index 265. Adding `+8` padding (`cum0_[267]`) was applied as a precaution.
@@ -698,23 +740,25 @@ All v4.0 formats remain decompressable. The PARALLEL (0x07) type is written by v
 
 | Feature | v4.0 | v5.0 |
 |---------|------|------|
-| **Pipeline threading** | BWT only (then MTF+ZRLE+Order-1 sequential) | Full pipeline per block (BWT+MTF+ZRLE+Order-1 all parallel) |
+| **Pipeline threading** | BWT only (then MTF+ZRLE+Order-1 sequential) | Full pipeline per block (all parallel) |
+| **Block size** | 900 KB | **600 KB** (more threads, minimal ratio cost) |
 | **Encode loop allocation** | `std::vector<EncodingStep>` (heap, 900K allocs/block) | `EncodeResult` struct (stack, zero heap) |
 | **Entropy coder (Order-0)** | Schindler range coder (2 divisions/symbol) | **ryg rANS** (0 divisions/symbol, flat lookup table) |
+| **Build flags** | `-O3 -march=native` | **+ `-flto=auto`** |
 | **File format (structured)** | `ORDER_1_PREPROC` (0x06) | `PARALLEL` (0x07) |
 | **File format (high-entropy)** | `ORDER_0` (0x00) | `RANS_ORDER_0` (0x08) |
 | **Backward compatibility** | Reads all older formats | Writes new formats; reads all legacy formats |
-| **Compression ratio** | 56.39% avg | **56.39% avg (unchanged)** |
-| **File G compress** | 117 ms | **~62 ms (1.89×)** |
-| **File B compress** | 68 ms | **~39 ms (1.74×)** |
-| **File C compress** | 96 ms | **~45 ms (2.13×)** |
-| **File E compress** | 49 ms | **~13 ms (3.8×)** |
-| **File F compress** | 91 ms | **~20 ms (4.6×)** |
-| **File G decompress** | 43 ms | **~34 ms (−21%)** |
-| **File H decompress** | 97 ms | **~76 ms (−22%)** |
-| **File E decompress** | 55 ms | **~10 ms (5.5×)** |
-| **File F decompress** | 126 ms | **~23 ms (5.5×)** |
-| **Avg decompress improvement** | baseline | **−25% Order-1 files; −82% Order-0 files** |
+| **Compression ratio** | 56.39% avg | **~56.7% avg** (600KB blocks; +0.3pp) |
+| **File G compress** | 117 ms | **~53 ms (2.2×)** |
+| **File B compress** | 68 ms | **~31 ms (2.2×)** |
+| **File C compress** | 96 ms | **~39 ms (2.5×)** |
+| **File E compress** | 49 ms | **~9 ms (5.4×)** |
+| **File F compress** | 91 ms | **~22 ms (4.1×)** |
+| **File G decompress** | 43 ms | **~32 ms (−26%)** |
+| **File H decompress** | 97 ms | **~62 ms (−36%)** |
+| **File E decompress** | 55 ms | **~11 ms (5×)** |
+| **File F decompress** | 126 ms | **~21 ms (6×)** |
+| **Avg decompress improvement** | baseline | **−38% Order-1 files; −82% Order-0 files** |
 
 ---
 

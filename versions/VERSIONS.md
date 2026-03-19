@@ -23,23 +23,27 @@ Group 07 - Universidade de Aveiro
 ### v5.0 (March 2026) - Current Release
 
 **Major Updates:**
-- **Full Pipeline Parallelism**: Each 900 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own `std::thread` simultaneously (pbzip2 design)
+- **Full Pipeline Parallelism**: Each 600 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own `std::thread` simultaneously (pbzip2 design)
 - **Allocation-Free Encode Loop**: New `encode_symbol_fast()` returns a fixed-size `EncodeResult` struct instead of `std::vector<EncodingStep>`, eliminating ~900,000 heap allocations per block
 - **`find_symbol_and_get_range`**: Fused decode helper eliminates duplicate O(258) scan; single pass captures lo/hi/total
 - **Decode Loop Restructuring**: Flat if/else branches + inline accessors replace inner while + flag overhead; Order-0 total_freq hoisted
 - **rANS Order-0**: ryg's rANS replaces Schindler range coder for static Order-0 path; zero divisions per decoded symbol; flat 16384-slot lookup table; model type `0x08`
 - **New PARALLEL File Format**: Model type `0x07` with per-block metadata (BWT index, transform flags, sizes)
+- **600 KB block size**: reduced from 900 KB; 1.3–1.5× speedup from more parallel threads; ratio cost ≤0.4pp on most files
+- **`-flto=auto`**: link-time optimisation; cross-module hot path inlining; −30% on E compress
 
 **Performance:**
-- Average compression ratio: **56.39%** (unchanged from v4.0 — pure speed release)
-- Compression: G 117ms→62ms (1.89×), B 68ms→39ms (1.74×), C 96ms→45ms (2.13×), **E 49ms→13ms (3.8×), F 91ms→20ms (4.6×)**
-- Decompression: **−25% average** on Order-1 files; **−82% on Order-0 files** (rANS)
-- Decompress Order-1: A 63ms→43ms, B 43ms→32ms, C 48ms→34ms, G 43ms→34ms, H 97ms→76ms
-- Decompress Order-0: **E 55ms→10ms, F 126ms→23ms** — now beats gzip on decompression
+- Average compression ratio: **~56.7%** (600KB blocks add ~0.3pp vs v4.0's 56.39%)
+- Compression: G 117ms→53ms (2.2×), B 68ms→31ms (2.2×), C 96ms→39ms (2.5×), **E 49ms→9ms (5.4×), F 91ms→22ms (4.1×)**
+- Decompression: **−38% average** on Order-1 files; **−82% on Order-0 files** (rANS)
+- Decompress Order-1: A 63ms→35ms, B 43ms→26ms, C 48ms→30ms, G 43ms→32ms, H 97ms→62ms
+- Decompress Order-0: **E 55ms→11ms, F 126ms→21ms** — beats gzip on decompression
 - Beats bzip2 on **all 7 files**
 
 **Failed optimizations tried:**
 - Prefix-sum arrays for O(1) cumulative lookups: increased L2/L3 cache working set from ~264 KB to ~518 KB; made G 21% *slower*; reverted
+- `-funroll-loops`: bloated rANS decode loop, caused L1-I cache eviction; E decompress 10ms→18ms; dropped
+- Profile-guided optimisation (PGO): helped B/A decompress but regressed E/F rANS paths by +20–64%; net negative; reverted to LTO-only
 
 **Detailed Documentation:** See [v5.0 README](g07_v5.0/README.md)
 
@@ -244,7 +248,7 @@ Group 07 - Universidade de Aveiro
   - Tested and reverted: prefix-sum cumulative arrays (21% slower, cache pressure)
   - rANS Order-0: ryg's rans_byte.h + RansStaticCoder wrapper
   - New PARALLEL (0x07) and RANS_ORDER_0 (0x08) file formats
-- **2026-03-19**: v5.0 released (pipeline parallelism + rANS; beats bzip2 on all 7 files)
+- **2026-03-19**: v5.0 released (pipeline parallelism + rANS + 600KB blocks + LTO; beats bzip2 on all 7 files)
 
 ---
 

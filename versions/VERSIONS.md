@@ -10,7 +10,9 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | **Current** |
+| **v5.0** | 2026-03-19 | Full pipeline parallelism + allocation-free encode loop | 56.39% avg ratio | **Current** |
+| **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
+| **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | Superseded |
 | **v2.0** | 2026-03-05 | Multi-Model + Range Coding + Auto-Select | 62.74% avg ratio | Superseded |
 | **v1.0** | 2026-02-20 | Order-0 Model + Arithmetic Coding | 71.44% avg ratio | Superseded |
 
@@ -18,7 +20,47 @@ Group 07 - Universidade de Aveiro
 
 ## Version Details
 
-### v3 (March 2026) - Current Release
+### v5.0 (March 2026) - Current Release
+
+**Major Updates:**
+- **Full Pipeline Parallelism**: Each 900 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own `std::thread` simultaneously (pbzip2 design)
+- **Allocation-Free Encode Loop**: New `encode_symbol_fast()` returns a fixed-size `EncodeResult` struct instead of `std::vector<EncodingStep>`, eliminating ~900,000 heap allocations per block
+- **New PARALLEL File Format**: Model type `0x07` with per-block metadata (BWT index, transform flags, sizes) instead of a single shared header
+
+**Performance:**
+- Average compression ratio: **56.39%** (unchanged from v4.0 — pure speed release)
+- File G (2.5 MB): 117ms → **62ms (1.89×)**
+- File H (1.0 MB): 96ms → **81ms (1.19×)**
+- File B (1.2 MB): 68ms → **39ms (1.74×)**
+- File C (2.0 MB): 96ms → **45ms (2.13×)**
+
+**Failed optimizations tried:**
+- Prefix-sum arrays for O(1) cumulative lookups: increased L2/L3 cache working set from ~264 KB to ~518 KB; made G 21% *slower*; reverted
+
+**Detailed Documentation:** See [v5.0 README](g07_v5.0/README.md)
+
+---
+
+### v4.0 (March 2026) - Superseded
+
+**Major Updates:**
+- **Flat Array Context Model**: Replaced `std::map` per context with flat `uint32_t[256][258]` — 69× speedup on large files
+- **libsais**: O(n) suffix array replacing O(n log n) prefix-doubling BWT
+- **Parallel BWT**: One thread per block for BWT transform only
+- **`-march=native`**: AVX2 SIMD auto-vectorization (256-bit vs SSE2 128-bit)
+- **900 KB block size**: Increased from v3's 1024 bytes
+
+**Performance:**
+- Average compression ratio: **56.39%** (improved from v3's 57.48%)
+- File H (1 MB): 6,594ms → **96ms (69×)**
+- File G (2.5 MB): 3,357ms → **117ms (29×)**
+- File C (2 MB): 2,614ms → **96ms (27×)**
+
+**Detailed Documentation:** See [v4.0 README](g07_v4.0/README.md)
+
+---
+
+### v3 (March 2026) - Superseded
 
 **Major Updates:**
 - **BWT Preprocessing**: Burrows-Wheeler Transform for improved compression
@@ -156,7 +198,7 @@ Group 07 - Universidade de Aveiro
 | **Preprocessing** | None | None | BWT (1024-byte blocks) | ✅ Added |
 | **Files Won** | 1/8 | 2/8 | **3/8** | **+2 files** |
 | **Overall Rank** | #5 | #5 | **#3** | **+2 positions** |
-| **Speed** | Baseline | ~2x faster | Competitive | Maintained |
+| **Speed** | Baseline | ~2x faster | Competitive | ~1.7× faster (v5.0 vs v4.0) |
 | **Models** | 1 (Order-0) | 2 (Order-0 + Order-1) | 2 + BWT | Enhanced |
 | **Auto-Selection** | No | Yes (90% success) | Yes (BWT + Model) | ✅ Enhanced |
 | **BWT Auto-Select** | N/A | N/A | Yes (entropy-based) | ✅ Added |
@@ -184,7 +226,20 @@ Group 07 - Universidade de Aveiro
   - Comprehensive BWT unit testing
   - Integration with existing compression pipeline
 - **2026-03-06**: v3 released (BWT preprocessing + Multi-model)
+- **2026-03-07 - 2026-03-13**: v4.0 development
+  - Flat array context model (replacing std::map)
+  - libsais O(n) BWT
+  - Parallel BWT blocks (std::thread)
+  - AVX2 via -march=native
+  - Block size increase to 900 KB
+- **2026-03-13**: v4.0 released (major performance overhaul, 69× speedup)
+- **2026-03-14 - 2026-03-19**: v5.0 development
+  - Full pipeline independence per block (pbzip2 design)
+  - encode_symbol_fast (stack-allocated EncodeResult)
+  - Tested and reverted: prefix-sum cumulative arrays
+  - New PARALLEL (0x07) file format
+- **2026-03-19**: v5.0 released (pipeline parallelism, ~1.7× vs v4.0)
 
 ---
 
-*Last updated: 2026-03-06*
+*Last updated: 2026-03-19*

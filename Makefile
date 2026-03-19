@@ -3,9 +3,9 @@
 
 CXX = g++
 CC = gcc
-CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -march=native -I./include
-CFLAGS = -O3 -march=native -I./include
-LDFLAGS = -lpthread
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -march=native -flto=auto -I./include
+CFLAGS = -O3 -march=native -flto=auto -I./include
+LDFLAGS = -lpthread -flto=auto
 
 # Directories
 SRC_DIR = src

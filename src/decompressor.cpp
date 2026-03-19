@@ -136,9 +136,11 @@ int main(int argc, char* argv[]) {
                         if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                         decoder.decode_symbol(lo, hi, total);
                         if (sym == 256) {
-                            // Escape: fall back to order-0
-                            cum = decoder.get_current_count(ctx_model.get_order0_total());
-                            sym = ctx_model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                            // Escape: fall back to order-0 with Method C exclusions
+                            const uint32_t* ctx_freq = ctx_model.get_order1_freq_ptr();
+                            uint32_t excl_total = ctx_model.get_order0_total_excl_ctx(ctx_freq);
+                            cum = decoder.get_current_count(excl_total);
+                            sym = ctx_model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, lo, hi, total);
                             if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                             decoder.decode_symbol(lo, hi, total);
                         }
@@ -278,9 +280,11 @@ int main(int argc, char* argv[]) {
                     if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                     decoder.decode_symbol(lo, hi, total);
                     if (sym == 256) {
-                        // Escape: fall back to order-0
-                        cum = decoder.get_current_count(model.get_order0_total());
-                        sym = model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                        // Escape: fall back to order-0 with Method C exclusions
+                        const uint32_t* ctx_freq = model.get_order1_freq_ptr();
+                        uint32_t excl_total = model.get_order0_total_excl_ctx(ctx_freq);
+                        cum = decoder.get_current_count(excl_total);
+                        sym = model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, lo, hi, total);
                         if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                         decoder.decode_symbol(lo, hi, total);
                     }

@@ -245,7 +245,7 @@ int main(int argc, char* argv[]) {
                     const std::vector<uint8_t>& to_encode = use_zrle_this ? zrle_data : mtf_data;
 
                     ContextModel ctx_model;
-                    ctx_model.set_encoding_method_simple();
+                    ctx_model.set_encoding_method_ppm_c();
                     ctx_model.init_adaptive();
                     RangeEncoder range_enc;
                     for (uint8_t b : to_encode) {
@@ -434,7 +434,7 @@ int main(int argc, char* argv[]) {
             std::cout << "Encoding with simplified adaptive model..." << std::endl;
 
             ContextModel model;
-            model.set_encoding_method_simple();
+            model.set_encoding_method_ppm_c();
             model.init_adaptive();
 
             RangeEncoder encoder;

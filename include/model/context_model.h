@@ -118,6 +118,14 @@ public:
     uint32_t get_order0_total()    const { return total0_; }
     uint32_t get_order1_total()    const { return total1_[prev_byte_]; }
 
+    // Method C: exclusion-based helpers (no heap allocation)
+    // Returns pointer to current Order-1 context freq array (valid while prev_byte_ unchanged)
+    const uint32_t* get_order1_freq_ptr() const { return freq1_[prev_byte_]; }
+    uint32_t get_order0_total_excl_ctx(const uint32_t* ctx_freq) const;
+    // Fused find+range for Order-0 excluding symbols seen in ctx_freq
+    int find_symbol_and_get_range_excl_ctx(uint32_t target, const uint32_t* ctx_freq,
+                                           uint32_t& lo, uint32_t& hi, uint32_t& total) const;
+
     bool     has_symbol_in_context(int order, int symbol) const;
     uint32_t get_total_freq(int order) const;
     uint32_t get_total_freq_with_exclusions(int order, const std::vector<int>& excluded) const;

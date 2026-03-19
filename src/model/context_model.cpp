@@ -233,12 +233,31 @@ ContextModel::EncodeResult ContextModel::encode_symbol_fast(uint8_t byte) {
             res.steps[0].symbol = ESCAPE_SYMBOL;
             res.count = 1;
         }
-        // Order-0 encode
-        get_symbol_range(0, byte,
-                         res.steps[res.count].cum_freq_low,
-                         res.steps[res.count].cum_freq_high,
-                         res.steps[res.count].total_freq);
-        res.steps[res.count].symbol = byte;
+        // Order-0 encode — use exclusions when METHOD_C and escaping from order-1
+        const int idx = res.count;
+        if (idx == 1 && encoding_method_ == EncodingMethod::METHOD_C) {
+            const uint32_t* ctx_freq = freq1_[prev_byte_];
+            uint32_t cum = 0, tot = 0;
+            for (int s = 0; s < 258; s++) {
+                if (!ctx_freq[s]) tot += freq0_[s];
+            }
+            for (int s = 0; s < 258; s++) {
+                if (ctx_freq[s]) continue;
+                if (s == byte) {
+                    res.steps[idx].cum_freq_low  = cum;
+                    res.steps[idx].cum_freq_high = cum + freq0_[s];
+                    res.steps[idx].total_freq    = tot;
+                    break;
+                }
+                cum += freq0_[s];
+            }
+        } else {
+            get_symbol_range(0, byte,
+                             res.steps[idx].cum_freq_low,
+                             res.steps[idx].cum_freq_high,
+                             res.steps[idx].total_freq);
+        }
+        res.steps[idx].symbol = byte;
         res.count++;
     }
 
@@ -295,13 +314,48 @@ void ContextModel::print_statistics() const {
 }
 
 // ============================================================================
-// Method-C stubs (not used in SIMPLE mode)
+// Method-C exclusion helpers
 // ============================================================================
 
 std::vector<ContextModel::EncodingStep>
 ContextModel::encode_symbol_with_exclusions(uint8_t byte) {
-    // Not used — fall back to simple
-    return encode_symbol_simple(byte);
+    std::vector<EncodingStep> steps;
+    steps.reserve(2);
+
+    if (has_prev_ && ctx_exists_[prev_byte_] && freq1_[prev_byte_][byte] > 0) {
+        // Symbol known in order-1 — encode directly
+        EncodingStep s;
+        s.symbol = byte;
+        get_symbol_range(1, byte, s.cum_freq_low, s.cum_freq_high, s.total_freq);
+        steps.push_back(s);
+    } else {
+        if (has_prev_ && ctx_exists_[prev_byte_]) {
+            // Encode escape in order-1
+            EncodingStep esc;
+            esc.symbol = ESCAPE_SYMBOL;
+            get_symbol_range(1, ESCAPE_SYMBOL, esc.cum_freq_low, esc.cum_freq_high, esc.total_freq);
+            steps.push_back(esc);
+
+            // Encode byte in order-0 with exclusions (symbols seen in order-1 context)
+            EncodingStep s;
+            s.symbol = byte;
+            std::vector<int> excluded;
+            const uint32_t* f1 = freq1_[prev_byte_];
+            for (int i = 0; i < 256; i++) {
+                if (f1[i] > 0) excluded.push_back(i);
+            }
+            get_symbol_range_with_exclusions(0, byte, excluded, s.cum_freq_low, s.cum_freq_high, s.total_freq);
+            steps.push_back(s);
+        } else {
+            // No order-1 context — plain order-0
+            EncodingStep s;
+            s.symbol = byte;
+            get_symbol_range(0, byte, s.cum_freq_low, s.cum_freq_high, s.total_freq);
+            steps.push_back(s);
+        }
+    }
+
+    return steps;
 }
 
 void ContextModel::get_symbol_range_with_exclusions(int order, int symbol,
@@ -362,6 +416,40 @@ int ContextModel::find_symbol_and_get_range(int order, uint32_t target,
         }
         return -1;
     }
+}
+
+uint32_t ContextModel::get_order0_total_excl_ctx(const uint32_t* ctx_freq) const {
+    uint32_t tot = 0;
+    for (int s = 0; s < 258; s++) {
+        if (!ctx_freq[s]) tot += freq0_[s];
+    }
+    return tot;
+}
+
+int ContextModel::find_symbol_and_get_range_excl_ctx(uint32_t target,
+                                                      const uint32_t* ctx_freq,
+                                                      uint32_t& lo, uint32_t& hi,
+                                                      uint32_t& total) const {
+    uint32_t tot = 0;
+    for (int s = 0; s < 258; s++) {
+        if (!ctx_freq[s]) tot += freq0_[s];
+    }
+    total = tot;
+    uint32_t cum = 0;
+    for (int s = 0; s < 258; s++) {
+        if (ctx_freq[s]) continue;
+        uint32_t f = freq0_[s];
+        if (f) {
+            uint32_t next = cum + f;
+            if (next > target) {
+                lo = cum;
+                hi = next;
+                return s;
+            }
+            cum = next;
+        }
+    }
+    return -1;
 }
 
 int ContextModel::find_symbol_with_exclusions(int order, uint32_t cum_freq,

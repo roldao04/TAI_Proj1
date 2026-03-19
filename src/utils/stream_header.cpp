@@ -187,6 +187,8 @@ Header parse_header(const std::vector<uint8_t>& data) {
             !has_flag(header.transform_flags, TRANSFORM_MTF)) {
             throw std::runtime_error("Invalid compressed file: ZRLE requires MTF");
         }
+    } else if (header.model_type == ModelType::PARALLEL) {
+        throw std::runtime_error("Use parse_parallel_header() for PARALLEL streams");
     } else if (header.model_type != ModelType::ORDER_0 &&
                header.model_type != ModelType::ORDER_1 &&
                header.model_type != ModelType::ORDER_2 &&
@@ -196,6 +198,48 @@ Header parse_header(const std::vector<uint8_t>& data) {
 
     header.payload_offset = offset;
     return header;
+}
+
+void write_parallel_header(std::vector<uint8_t>& buffer,
+                           uint64_t original_size,
+                           const std::vector<ParallelBlockMeta>& blocks) {
+    buffer.push_back(static_cast<uint8_t>(ModelType::PARALLEL));
+    append_u64(buffer, original_size);
+    append_u32(buffer, static_cast<uint32_t>(blocks.size()));
+    for (const auto& b : blocks) {
+        append_u32(buffer, b.bwt_primary_index);
+        buffer.push_back(b.transform_flags);
+        append_u32(buffer, b.original_block_size);
+        append_u32(buffer, b.preprocessed_block_size);
+        append_u32(buffer, b.compressed_block_size);
+    }
+}
+
+ParallelHeader parse_parallel_header(const std::vector<uint8_t>& data) {
+    if (data.size() < 13) {
+        throw std::runtime_error("Invalid parallel compressed file: too small");
+    }
+
+    size_t offset = 0;
+    if (static_cast<ModelType>(data[offset++]) != ModelType::PARALLEL) {
+        throw std::runtime_error("Not a parallel compressed stream");
+    }
+
+    ParallelHeader ph;
+    ph.original_size = read_u64(data, offset);
+    uint32_t num_blocks = read_u32(data, offset);
+
+    ph.blocks.resize(num_blocks);
+    for (uint32_t i = 0; i < num_blocks; i++) {
+        ph.blocks[i].bwt_primary_index    = read_u32(data, offset);
+        ph.blocks[i].transform_flags      = data[offset++];
+        ph.blocks[i].original_block_size   = read_u32(data, offset);
+        ph.blocks[i].preprocessed_block_size = read_u32(data, offset);
+        ph.blocks[i].compressed_block_size = read_u32(data, offset);
+    }
+
+    ph.data_section_offset = offset;
+    return ph;
 }
 
 std::string describe_model_type(const Header& header) {
@@ -212,6 +256,8 @@ std::string describe_model_type(const Header& header) {
         case ModelType::ORDER_1_BWT:
         case ModelType::ORDER_1_PREPROC:
             return describe_preprocessed_order(header, "Order-1");
+        case ModelType::PARALLEL:
+            return "Parallel (per-block BWT+MTF+ZRLE+Order-1)";
         case ModelType::UNCOMPRESSED:
             return "Uncompressed";
     }

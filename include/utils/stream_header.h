@@ -16,6 +16,7 @@ enum class ModelType : uint8_t {
     ORDER_1_BWT = 4,
     ORDER_0_PREPROC = 5,
     ORDER_1_PREPROC = 6,
+    PARALLEL = 7,       // fully independent per-block pipeline (BWT+MTF+ZRLE+Order1 per block)
     UNCOMPRESSED = 255
 };
 
@@ -40,6 +41,20 @@ struct Header {
     bool is_order1() const;
 };
 
+struct ParallelBlockMeta {
+    uint32_t bwt_primary_index;
+    uint8_t  transform_flags;
+    uint32_t original_block_size;
+    uint32_t preprocessed_block_size;
+    uint32_t compressed_block_size;
+};
+
+struct ParallelHeader {
+    uint64_t original_size;
+    std::vector<ParallelBlockMeta> blocks;
+    size_t data_section_offset;
+};
+
 bool has_flag(uint8_t flags, TransformFlag flag);
 void set_flag(uint8_t& flags, TransformFlag flag);
 
@@ -51,6 +66,12 @@ void write_header(std::vector<uint8_t>& buffer,
                   const std::vector<uint32_t>& bwt_primary_indices);
 
 Header parse_header(const std::vector<uint8_t>& data);
+
+void write_parallel_header(std::vector<uint8_t>& buffer,
+                           uint64_t original_size,
+                           const std::vector<ParallelBlockMeta>& blocks);
+
+ParallelHeader parse_parallel_header(const std::vector<uint8_t>& data);
 
 std::string describe_model_type(const Header& header);
 

@@ -1,6 +1,7 @@
 #include <iostream>
 #include <chrono>
 #include <array>
+#include <thread>
 #include "arithmetic/range_coder.h"
 #include "model/frequency_model.h"
 #include "model/context_model.h"
@@ -34,6 +35,113 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading compressed file: " << input_filename << std::endl;
         std::vector<uint8_t> compressed_data = FileIO::read_file(input_filename);
         std::cout << "Compressed size: " << compressed_data.size() << " bytes" << std::endl;
+
+        // Handle parallel format before the standard single-stream header parser
+        if (!compressed_data.empty() &&
+            static_cast<ModelType>(compressed_data[0]) == ModelType::PARALLEL) {
+
+            StreamHeader::ParallelHeader ph = StreamHeader::parse_parallel_header(compressed_data);
+            size_t num_blocks = ph.blocks.size();
+            std::cout << "Model type: Parallel BWT+MTF+ZRLE+Order-1 (" << num_blocks << " blocks)" << std::endl;
+            std::cout << "Original size: " << ph.original_size << " bytes" << std::endl;
+
+            std::vector<std::vector<uint8_t>> block_outputs(num_blocks);
+
+            auto decompress_one_block = [&](size_t bi) {
+                const StreamHeader::ParallelBlockMeta& meta = ph.blocks[bi];
+
+                size_t blk_offset = ph.data_section_offset;
+                for (size_t j = 0; j < bi; j++) {
+                    blk_offset += ph.blocks[j].compressed_block_size;
+                }
+
+                std::vector<uint8_t> encoded(
+                    compressed_data.begin() + blk_offset,
+                    compressed_data.begin() + blk_offset + meta.compressed_block_size);
+
+                ContextModel ctx_model;
+                ctx_model.set_encoding_method_simple();
+                ctx_model.init_adaptive();
+                RangeDecoder decoder(encoded);
+
+                std::vector<uint8_t> decoded;
+                decoded.reserve(meta.preprocessed_block_size);
+
+                while (decoded.size() < meta.preprocessed_block_size) {
+                    int current_order = (ctx_model.get_history_size() > 0) ? 1 : 0;
+                    uint8_t decoded_byte = 0;
+                    bool symbol_found = false;
+
+                    while (current_order >= 0 && !symbol_found) {
+                        uint32_t total_freq = ctx_model.get_total_freq(current_order);
+                        if (total_freq == 0) { current_order--; continue; }
+
+                        uint32_t cum_freq = decoder.get_current_count(total_freq);
+                        int symbol = ctx_model.find_symbol(current_order, cum_freq);
+                        if (symbol < 0) throw std::runtime_error("Symbol not found during decompression");
+
+                        uint32_t lo, hi, total;
+                        ctx_model.get_symbol_range(current_order, symbol, lo, hi, total);
+                        decoder.decode_symbol(lo, hi, total);
+
+                        if (symbol == 256) {
+                            current_order--;
+                        } else {
+                            decoded_byte = static_cast<uint8_t>(symbol);
+                            symbol_found = true;
+                        }
+                    }
+
+                    if (!symbol_found) throw std::runtime_error("Failed to decode symbol");
+                    decoded.push_back(decoded_byte);
+                    ctx_model.update_frequencies(decoded_byte);
+                    ctx_model.update_history(decoded_byte);
+                }
+
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_ZRLE)) {
+                    decoded = ZeroRunLengthEncoder::decode(decoded);
+                }
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_MTF)) {
+                    decoded = MoveToFront::inverse_transform(decoded);
+                }
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_BWT)) {
+                    decoded = BWT::inverse_transform(decoded, meta.bwt_primary_index);
+                }
+
+                block_outputs[bi] = std::move(decoded);
+            };
+
+            std::vector<std::thread> threads;
+            threads.reserve(num_blocks);
+            for (size_t i = 0; i < num_blocks; i++) {
+                threads.emplace_back(decompress_one_block, i);
+            }
+            for (auto& t : threads) t.join();
+
+            std::vector<uint8_t> output_data;
+            output_data.reserve(ph.original_size);
+            for (const auto& bo : block_outputs) {
+                output_data.insert(output_data.end(), bo.begin(), bo.end());
+            }
+
+            if (output_data.size() != ph.original_size) {
+                std::cerr << "Warning: Decoded size (" << output_data.size()
+                          << ") doesn't match expected size (" << ph.original_size << ")" << std::endl;
+            }
+
+            std::cout << "Writing decompressed file: " << output_filename << std::endl;
+            FileIO::write_file(output_filename, output_data);
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+            std::cout << "\n=== Decompression Statistics ===" << std::endl;
+            std::cout << "Compressed size:    " << compressed_data.size() << " bytes" << std::endl;
+            std::cout << "Decompressed size:  " << output_data.size() << " bytes" << std::endl;
+            std::cout << "Decompression time: " << duration.count() << " ms" << std::endl;
+
+            return 0;
+        }
 
         StreamHeader::Header header = StreamHeader::parse_header(compressed_data);
         ModelType model_type = header.model_type;

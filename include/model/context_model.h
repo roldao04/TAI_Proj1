@@ -37,6 +37,13 @@ public:
         uint32_t total_freq;
     };
 
+    // Fixed-size result: avoids heap allocation in the hot encode loop.
+    // Always holds 1 or 2 steps (1 = direct order-1, 2 = escape + order-0).
+    struct EncodeResult {
+        EncodingStep steps[2];
+        int count;
+    };
+
     static const int ALPHABET_SIZE   = 256;
     static const int ESCAPE_SYMBOL   = 256;
     static const int EOF_SYMBOL      = 257;
@@ -79,6 +86,7 @@ public:
     void init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size = 8192);
 
     std::vector<EncodingStep> encode_symbol(uint8_t byte);
+    EncodeResult encode_symbol_fast(uint8_t byte);
 
     int decode_symbol(uint32_t cum_freq);
 

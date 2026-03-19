@@ -2,6 +2,7 @@
 #include <chrono>
 #include <string>
 #include <cstring>
+#include <thread>
 #include <utility>
 #include "arithmetic/range_coder.h"
 #include "model/frequency_model.h"
@@ -218,6 +219,89 @@ int main(int argc, char* argv[]) {
                 use_mtf = true;
             }
 
+            // PARALLEL PATH: BWT+MTF+ZRLE+Order-1 independently per block
+            if (use_mtf && model_type == ModelType::ORDER_1) {
+                std::cout << "Using parallel per-block pipeline (BWT+MTF+ZRLE+Order-1 per block)..." << std::endl;
+
+                const size_t BLOCK_SIZE = 900 * 1024;
+                size_t num_blocks = (input_data.size() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+                std::vector<StreamHeader::ParallelBlockMeta> block_metas(num_blocks);
+                std::vector<std::vector<uint8_t>> block_compressed(num_blocks);
+
+                auto compress_one_block = [&](size_t bi) {
+                    size_t blk_start = bi * BLOCK_SIZE;
+                    size_t blk_end   = std::min(blk_start + BLOCK_SIZE, input_data.size());
+                    std::vector<uint8_t> block(input_data.begin() + blk_start,
+                                               input_data.begin() + blk_end);
+
+                    auto [bwt_data, primary_index] = BWT::transform(block);
+                    std::vector<uint8_t> mtf_data  = MoveToFront::transform(bwt_data);
+
+                    std::vector<uint8_t> zrle_data = ZeroRunLengthEncoder::encode(mtf_data);
+                    bool use_zrle_this = (zrle_preference != -1) &&
+                                        (zrle_preference == 1 || zrle_data.size() < mtf_data.size());
+                    const std::vector<uint8_t>& to_encode = use_zrle_this ? zrle_data : mtf_data;
+
+                    ContextModel ctx_model;
+                    ctx_model.set_encoding_method_simple();
+                    ctx_model.init_adaptive();
+                    RangeEncoder range_enc;
+                    for (uint8_t b : to_encode) {
+                        auto res = ctx_model.encode_symbol_fast(b);
+                        for (int si = 0; si < res.count; si++) {
+                            range_enc.encode_symbol(res.steps[si].cum_freq_low,
+                                                    res.steps[si].cum_freq_high,
+                                                    res.steps[si].total_freq);
+                        }
+                        ctx_model.update_frequencies(b);
+                        ctx_model.update_history(b);
+                    }
+                    range_enc.finish();
+
+                    StreamHeader::ParallelBlockMeta meta;
+                    meta.bwt_primary_index       = primary_index;
+                    meta.transform_flags         = StreamHeader::TRANSFORM_BWT | StreamHeader::TRANSFORM_MTF;
+                    if (use_zrle_this) meta.transform_flags |= StreamHeader::TRANSFORM_ZRLE;
+                    meta.original_block_size      = static_cast<uint32_t>(block.size());
+                    meta.preprocessed_block_size  = static_cast<uint32_t>(to_encode.size());
+                    meta.compressed_block_size    = static_cast<uint32_t>(range_enc.get_output().size());
+
+                    block_metas[bi]     = meta;
+                    block_compressed[bi] = range_enc.get_output();
+                };
+
+                std::vector<std::thread> threads;
+                threads.reserve(num_blocks);
+                for (size_t i = 0; i < num_blocks; i++) {
+                    threads.emplace_back(compress_one_block, i);
+                }
+                for (auto& t : threads) t.join();
+
+                std::vector<uint8_t> output_data;
+                StreamHeader::write_parallel_header(output_data, original_size, block_metas);
+                for (const auto& bc : block_compressed) {
+                    output_data.insert(output_data.end(), bc.begin(), bc.end());
+                }
+
+                std::cout << "Writing compressed file: " << output_filename << std::endl;
+                FileIO::write_file(output_filename, output_data);
+
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+                std::cout << "\n=== Compression Statistics ===" << std::endl;
+                std::cout << "Model: Parallel BWT+MTF+ZRLE+Order-1 (" << num_blocks << " blocks)" << std::endl;
+                std::cout << "Original size:    " << input_data.size() << " bytes" << std::endl;
+                std::cout << "Compressed size:  " << output_data.size() << " bytes" << std::endl;
+                std::cout << "Compression ratio: " << (100.0 * output_data.size() / input_data.size()) << "%" << std::endl;
+                std::cout << "Bits per symbol:  " << (8.0 * output_data.size() / input_data.size()) << std::endl;
+                std::cout << "Compression time: " << duration.count() << " ms" << std::endl;
+
+                return 0;
+            }
+            // else fall through to sequential path
+
             std::cout << "Applying BWT preprocessing..." << std::endl;
             auto start_bwt = std::chrono::high_resolution_clock::now();
 
@@ -337,9 +421,11 @@ int main(int argc, char* argv[]) {
             for (size_t idx = 0; idx < data_to_encode.size(); idx++) {
                 uint8_t byte = data_to_encode[idx];
 
-                auto steps = model.encode_symbol(byte);
-                for (const auto& step : steps) {
-                    encoder.encode_symbol(step.cum_freq_low, step.cum_freq_high, step.total_freq);
+                auto res = model.encode_symbol_fast(byte);
+                for (int si = 0; si < res.count; si++) {
+                    encoder.encode_symbol(res.steps[si].cum_freq_low,
+                                          res.steps[si].cum_freq_high,
+                                          res.steps[si].total_freq);
                 }
 
                 model.update_frequencies(byte);

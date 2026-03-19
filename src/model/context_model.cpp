@@ -41,12 +41,7 @@ void ContextModel::init_adaptive() {
     std::memset(total1_,     0, sizeof(total1_));
     std::memset(seen1_,      0, sizeof(seen1_));
     std::memset(ctx_exists_, 0, sizeof(ctx_exists_));
-
     has_prev_ = false;
-
-    std::cout << "Adaptive context model initialized ("
-              << (encoding_method_ == EncodingMethod::SIMPLE ? "Simple" : "PPM Method C")
-              << " mode)" << std::endl;
 }
 
 void ContextModel::init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size) {
@@ -214,6 +209,40 @@ std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_simple(uint8
     }
 
     return steps;
+}
+
+ContextModel::EncodeResult ContextModel::encode_symbol_fast(uint8_t byte) {
+    EncodeResult res;
+    res.count = 0;
+
+    if (has_prev_ && ctx_exists_[prev_byte_] && freq1_[prev_byte_][byte] > 0) {
+        // Direct order-1 encode
+        get_symbol_range(1, byte,
+                         res.steps[0].cum_freq_low,
+                         res.steps[0].cum_freq_high,
+                         res.steps[0].total_freq);
+        res.steps[0].symbol = byte;
+        res.count = 1;
+    } else {
+        if (has_prev_ && ctx_exists_[prev_byte_]) {
+            // Escape in order-1
+            get_symbol_range(1, ESCAPE_SYMBOL,
+                             res.steps[0].cum_freq_low,
+                             res.steps[0].cum_freq_high,
+                             res.steps[0].total_freq);
+            res.steps[0].symbol = ESCAPE_SYMBOL;
+            res.count = 1;
+        }
+        // Order-0 encode
+        get_symbol_range(0, byte,
+                         res.steps[res.count].cum_freq_low,
+                         res.steps[res.count].cum_freq_high,
+                         res.steps[res.count].total_freq);
+        res.steps[res.count].symbol = byte;
+        res.count++;
+    }
+
+    return res;
 }
 
 // ============================================================================

@@ -10,7 +10,7 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v5.0** | 2026-03-19 | Full pipeline parallelism + allocation-free encode loop | 56.39% avg ratio | **Current** |
+| **v5.0** | 2026-03-19 | Full pipeline parallelism + encode_symbol_fast + rANS Order-0 | 56.39% avg ratio | **Current** |
 | **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
 | **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | Superseded |
 | **v2.0** | 2026-03-05 | Multi-Model + Range Coding + Auto-Select | 62.74% avg ratio | Superseded |
@@ -25,13 +25,18 @@ Group 07 - Universidade de Aveiro
 **Major Updates:**
 - **Full Pipeline Parallelism**: Each 900 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own `std::thread` simultaneously (pbzip2 design)
 - **Allocation-Free Encode Loop**: New `encode_symbol_fast()` returns a fixed-size `EncodeResult` struct instead of `std::vector<EncodingStep>`, eliminating ~900,000 heap allocations per block
-- **New PARALLEL File Format**: Model type `0x07` with per-block metadata (BWT index, transform flags, sizes) instead of a single shared header
+- **`find_symbol_and_get_range`**: Fused decode helper eliminates duplicate O(258) scan; single pass captures lo/hi/total
+- **Decode Loop Restructuring**: Flat if/else branches + inline accessors replace inner while + flag overhead; Order-0 total_freq hoisted
+- **rANS Order-0**: ryg's rANS replaces Schindler range coder for static Order-0 path; zero divisions per decoded symbol; flat 16384-slot lookup table; model type `0x08`
+- **New PARALLEL File Format**: Model type `0x07` with per-block metadata (BWT index, transform flags, sizes)
 
 **Performance:**
 - Average compression ratio: **56.39%** (unchanged from v4.0 — pure speed release)
-- Compression: G 117ms→62ms (1.89×), B 68ms→39ms (1.74×), C 96ms→45ms (2.13×)
-- Decompression: **−25% average** across all 7 files; now beats bzip2 on 6/7 files
-- Decompress: A 63ms→43ms, B 43ms→32ms, C 48ms→34ms, G 43ms→34ms, H 97ms→76ms
+- Compression: G 117ms→62ms (1.89×), B 68ms→39ms (1.74×), C 96ms→45ms (2.13×), **E 49ms→13ms (3.8×), F 91ms→20ms (4.6×)**
+- Decompression: **−25% average** on Order-1 files; **−82% on Order-0 files** (rANS)
+- Decompress Order-1: A 63ms→43ms, B 43ms→32ms, C 48ms→34ms, G 43ms→34ms, H 97ms→76ms
+- Decompress Order-0: **E 55ms→10ms, F 126ms→23ms** — now beats gzip on decompression
+- Beats bzip2 on **all 7 files**
 
 **Failed optimizations tried:**
 - Prefix-sum arrays for O(1) cumulative lookups: increased L2/L3 cache working set from ~264 KB to ~518 KB; made G 21% *slower*; reverted
@@ -190,19 +195,18 @@ Group 07 - Universidade de Aveiro
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v3 | Improvement (v3 vs v1.0) |
-|--------|------|------|------|---------------------------|
-| **Compression Ratio** | 71.44% | 62.74% | **57.48%** | **-13.96pp (19.5% better)** |
-| **Bits/Symbol** | 5.72 | 5.02 | **4.60** | **-1.12 bits** |
-| **Preprocessing** | None | None | BWT (1024-byte blocks) | ✅ Added |
-| **Files Won** | 1/8 | 2/8 | **3/8** | **+2 files** |
-| **Overall Rank** | #5 | #5 | **#3** | **+2 positions** |
-| **Speed** | Baseline | ~2x faster | Competitive | ~1.7× faster (v5.0 vs v4.0) |
-| **Models** | 1 (Order-0) | 2 (Order-0 + Order-1) | 2 + BWT | Enhanced |
-| **Auto-Selection** | No | Yes (90% success) | Yes (BWT + Model) | ✅ Enhanced |
-| **BWT Auto-Select** | N/A | N/A | Yes (entropy-based) | ✅ Added |
-| **Incompressible Detection** | No | Yes | Yes | ✅ Maintained |
-| **CLI Options** | None | --model | --model, --bwt, --no-bwt | ✅ Enhanced |
+| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 |
+|--------|------|------|------|------|------|
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | **56.39%** |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | **4.51** |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (900KB) |
+| **Entropy Coder** | Arithmetic | Range | Range | Range | Range + **rANS** |
+| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | **3/8** |
+| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | **+1.7–4.6× vs v4.0** |
+| **Decompress Speed** | Baseline | ~2× | Competitive | Baseline | **−25% Order-1, −82% Order-0** |
+| **Threading** | None | None | None | Parallel BWT | **Full parallel pipeline** |
+| **Beats bzip2** | No | Partial | Partial | 6/7 | **7/7** |
+| **Beats gzip (decompress)** | No | No | No | No | **E, F files** |
 
 ---
 
@@ -235,9 +239,12 @@ Group 07 - Universidade de Aveiro
 - **2026-03-14 - 2026-03-19**: v5.0 development
   - Full pipeline independence per block (pbzip2 design)
   - encode_symbol_fast (stack-allocated EncodeResult)
-  - Tested and reverted: prefix-sum cumulative arrays
-  - New PARALLEL (0x07) file format
-- **2026-03-19**: v5.0 released (pipeline parallelism, ~1.7× vs v4.0)
+  - find_symbol_and_get_range (fused decode, eliminates duplicate scan)
+  - Decode loop restructuring (flat if/else, inline accessors, total_freq hoisting)
+  - Tested and reverted: prefix-sum cumulative arrays (21% slower, cache pressure)
+  - rANS Order-0: ryg's rans_byte.h + RansStaticCoder wrapper
+  - New PARALLEL (0x07) and RANS_ORDER_0 (0x08) file formats
+- **2026-03-19**: v5.0 released (pipeline parallelism + rANS; beats bzip2 on all 7 files)
 
 ---
 

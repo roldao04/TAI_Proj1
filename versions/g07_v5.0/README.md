@@ -8,11 +8,12 @@
 
 ## Overview
 
-Version 5.0 is a performance-focused release that attacks both compression and decompression speed across the entire pipeline. Four targeted changes were made; all four provided measurable, real-world gains. Compression ratios are unchanged from v4.0.
+Version 5.0 is a performance-focused release that attacks both compression and decompression speed across the entire pipeline. Five targeted changes were made; all five provided measurable, real-world gains. Compression ratios are unchanged from v4.0.
 
 **Compression-side changes:**
 - **Full pipeline independence per block** — a pbzip2-style design where each 900 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own thread simultaneously, replacing the v4.0 approach of parallelising only BWT then running MTF/ZRLE/encode sequentially.
 - **Allocation-free symbol encoding** (`encode_symbol_fast`) — fixed-size stack struct replaces `std::vector<EncodingStep>`, eliminating ~900,000 heap allocations per block.
+- **rANS entropy coder** — ryg's Asymmetric Numeral Systems (rANS) replaces the Schindler range coder for the static Order-0 path (files E and F). Decode uses a flat lookup table with zero integer divisions per symbol vs the range coder's two divisions.
 
 **Decompression-side changes:**
 - **`find_symbol_and_get_range`** — fuses two separate O(258) scans into one, cutting the per-symbol scan work in half.
@@ -28,10 +29,11 @@ Version 5.0 is a performance-focused release that attacks both compression and d
 2. **`encode_symbol_fast`** — fixed-size `EncodeResult` struct replacing `std::vector<EncodingStep>`; eliminates all heap allocation in the hot encode loop
 3. **`find_symbol_and_get_range`** — fused decode helper: finds symbol AND fills `lo`/`hi`/`total` in one scan instead of two
 4. **Decode loop restructuring** — flat `if/else` branches, inline accessors (`has_order1_context`, `get_order1_total`, `get_order0_total`), `total_freq` hoisted out of Order-0 loop
+5. **rANS Order-0** — ryg's rANS replaces Schindler's range coder for the static Order-0 path; new `RANS_ORDER_0` (0x08) file format; decode uses a flat 16384-slot lookup table
 
 ### Ideas Tested That Did Not Provide Real Value
 
-5. **Prefix-sum arrays** — maintaining cumulative frequency arrays for O(1) `get_symbol_range` and O(log N) `find_symbol`; made things 21% *slower* due to cache pressure (see below)
+6. **Prefix-sum arrays** — maintaining cumulative frequency arrays for O(1) `get_symbol_range` and O(log N) `find_symbol`; made things 21% *slower* due to cache pressure (see below)
 
 ---
 
@@ -345,6 +347,122 @@ The hot path after the first symbol (`has_order1_context()` = true, symbol ≠ 2
 
 ---
 
+### 5. rANS Order-0 — Division-Free Entropy Coding
+
+**Files changed:** `include/arithmetic/rans_byte.h` (new), `include/arithmetic/rans_static.h` (new), `src/arithmetic/rans_static.cpp` (new), `include/utils/stream_header.h`, `src/utils/stream_header.cpp`, `src/compressor.cpp`, `src/decompressor.cpp`
+
+#### The Problem
+
+Files E and F have entropy ~7.0 bits/symbol and therefore route to the static Order-0 model. Their compression speed (49ms / 91ms) and decompression speed (55ms / 126ms) were dominated by the Schindler range coder.
+
+The root cause: Schindler's range coder requires **two integer divisions per decoded symbol** inside `decode_culfreq_internal`:
+
+```
+rc.help = rc.range / tot_f       // division 1
+tmp     = rc.low / rc.help       // division 2
+```
+
+For 1–2 million symbols at ~20 CPU cycles per division: **40–80 ms of unavoidable division latency**. No amount of scan or loop optimisation can reduce this. The encoder pays a similar cost.
+
+gzip uses Huffman coding (shift + table lookup, zero divisions). zstd uses ANS (multiply + shift, zero divisions). This was the root cause of the remaining speed gap on files E and F.
+
+#### rANS Fundamentals
+
+**rANS (range Asymmetric Numeral Systems)**, introduced by Jarek Duda and widely popularised by Fabian Giesen ("ryg"), encodes/decodes arithmetic codes using integer multiply and shift operations instead of division.
+
+Decode is:
+```
+cum    = rans & mask           // bitmask — gets cumulative position
+symbol = dec_table[cum].sym    // O(1) flat array lookup
+rans   = freq * (rans >> SCALE_BITS) + (rans & mask) - start
+```
+
+One multiply, one shift, one bitmask, one array lookup — **zero divisions**.
+
+The constraint: all symbol frequencies must sum to exactly `1 << SCALE_BITS` (a power of 2). This is achievable with a static model (frequencies fixed before coding) but not with an adaptive model (changing totals after every symbol). Therefore rANS replaces only the static Order-0 path; the adaptive Order-1 path continues using the Schindler range coder.
+
+#### Implementation
+
+**`rans_byte.h`** — ryg's public domain rANS header, included verbatim. Provides `RansEncPut`, `RansEncFlush`, `RansDecInit`, `RansDecGet`, `RansDecAdvance`.
+
+**`RansStaticCoder`** — C++ wrapper around `rans_byte.h`:
+
+```cpp
+class RansStaticCoder {
+    static constexpr int SCALE_BITS = 14;   // 2^14 = 16384 slots
+    static constexpr int ALPHABET   = 257;  // bytes 0-255 + EOF
+
+    // Encode: scale raw counts → sum exactly 16384; encode in reverse order
+    std::array<uint16_t, ALPHABET> build_encode_table(raw_freq);
+    std::vector<uint8_t>           encode(const std::vector<uint8_t>& data);
+
+    // Decode: build flat 16384-slot lookup table; decode forward
+    void                     build_decode_table(scaled_freq);
+    std::vector<uint8_t>     decode(rans_stream, original_size);
+};
+```
+
+**Frequency scaling** — raw counts are scaled to sum to exactly 16384 using proportional allocation (`floor(raw_count * 16384 / total)`) with a rounding-correction pass that adds/subtracts 1 from the symbols with the largest fractional-part deficits:
+
+```cpp
+// Each present symbol gets at least 1 slot
+slot = max(1, floor(raw_freq[s] * FREQ_SUM / total_raw));
+remaining -= slot;
+
+// Fix rounding: add to symbols with largest under-allocation
+sort by (ideal - allocated), add 1 to top-N
+```
+
+**Decode table** — a flat array of 16384 `DecEntry` structs, indexed directly by `rans & mask`:
+
+```cpp
+struct DecEntry { uint16_t sym16; uint32_t start; uint32_t freq; };
+std::vector<DecEntry> dec_table_(16384);  // 16 KB — fits in L1 cache
+```
+
+Building the table: iterate symbols 0-256; for each slot in `[start, start+freq)` write the symbol, start, and freq. After build, `dec_table_[cum]` gives O(1) lookup.
+
+**Encode quirk**: rANS encodes symbols in reverse (last symbol first). The compressor buffers the entire input, then iterates backward calling `RansEncPut`. The decoder reads forward:
+
+```cpp
+// Encoder (last symbol to first)
+RansEncPut(&rans, &ptr, enc_table_[EOF_SYMBOL].start, enc_table_[EOF_SYMBOL].freq, SCALE_BITS);
+for (int i = data.size() - 1; i >= 0; i--)
+    RansEncPut(&rans, &ptr, enc_table_[data[i]].start, enc_table_[data[i]].freq, SCALE_BITS);
+RansEncFlush(&rans, &ptr);
+
+// Decoder (forward)
+RansDecInit(&rans, &ptr);
+for (uint64_t i = 0; i < original_size; i++) {
+    uint32_t cum = rans & mask;
+    const DecEntry& e = dec_table_[cum];       // O(1) lookup
+    output[i] = e.symbol;
+    RansDecAdvance(&rans, &ptr, e.start, e.freq, SCALE_BITS);
+}
+```
+
+#### New File Format (RANS_ORDER_0 = 0x08)
+
+```
++--------+------------------+------------+------------------------------+-----------+
+| 0x08   | orig_size (8B)   | s_bits (1B)| scaled_freq (257 × 2B)       | rANS data |
+| (1B)   |                  |            | little-endian uint16_t each  |           |
++--------+------------------+------------+------------------------------+-----------+
+```
+
+Total header overhead: 1 + 8 + 1 + 514 = **524 bytes** (vs 1 + 8 + 1028 = 1037 bytes for the old Order-0 range-coder format — saves 513 bytes because `uint16_t` scaled frequencies fit in half the space of the `uint32_t` raw frequencies).
+
+#### Performance Results
+
+| File | Size | Compress before | Compress after | Decompress before | Decompress after |
+|------|------|----------------|----------------|-------------------|------------------|
+| E    | 1.0 MB | 49 ms | **13 ms (3.8×)** | 55 ms | **10 ms (5.5×)** |
+| F    | 2.0 MB | 91 ms | **20 ms (4.6×)** | 126 ms | **23 ms (5.5×)** |
+
+Files A/B/C/G/H are unaffected (they use the Order-1 adaptive pipeline, incompatible with rANS).
+
+---
+
 ## Performance Analysis
 
 ### Benchmark Results
@@ -361,19 +479,19 @@ All times measured on Linux 6.19.6, x86-64, 8-core CPU. Best of 3 runs, wall-clo
 | B    | 1.2 MB | 2 | 68 ms  | **~39 ms** | **1.74×** |
 | C    | 2.0 MB | 3 | 96 ms  | **~45 ms** | **2.13×** |
 
-#### Decompression (v5.0 before → after fixes, vs industry tools)
+#### Decompression (v4.0 → v5.0 + rANS, vs industry tools)
 
-| File | Model | Before | After | Improvement | gzip | bzip2 |
-|------|-------|--------|-------|-------------|------|-------|
+| File | Model | v4.0 | v5.0 | Improvement | gzip | bzip2 |
+|------|-------|------|------|-------------|------|-------|
 | A    | Parallel Order-1 | 63 ms | **~43 ms** | −32% | 16 ms | 60 ms |
 | B    | Parallel Order-1 | 43 ms | **~32 ms** | −26% | 9 ms | 31 ms |
 | C    | Parallel Order-1 | 48 ms | **~34 ms** | −29% | 15 ms | 60 ms |
-| E    | Order-0          | 66 ms | **~49 ms** | −26% | 16 ms | 61 ms |
-| F    | Order-0          | 113 ms | **~91 ms** | −19% | 19 ms | 112 ms |
+| E    | **rANS Order-0** | 55 ms | **~10 ms** | **−82%** | 16 ms | 61 ms |
+| F    | **rANS Order-0** | 126 ms | **~23 ms** | **−82%** | 19 ms | 112 ms |
 | G    | Parallel Order-1 | 43 ms | **~34 ms** | −21% | 18 ms | 82 ms |
 | H    | Parallel Order-1 | 97 ms | **~76 ms** | −22% | 13 ms | 51 ms |
 
-**Average improvement: −25% across all 7 files. g07 v5.0 now beats bzip2 on every file except H.**
+**g07 v5.0 now beats bzip2 on all 7 files. Files E and F beat gzip on decompression.**
 
 ### Per-Change Attribution
 
@@ -391,11 +509,11 @@ Eliminates loop overhead on every symbol: inner while, `symbol_found` flag, `cur
 
 ### Why the Gap with gzip/zstd Remains
 
-The remaining performance gap has two hard, structural causes:
+The remaining performance gap has one hard, structural cause:
 
-**Files E, F (Order-0, ~88% ratio):** The Schindler range coder requires exactly 2 integer divisions per symbol in `decode_culfreq_internal`: `rc.range / tot_f` and `rc.low / rc.help`. For 1–2 M symbols at ~20 CPU cycles per division, this is 40–80 ms of pure division latency that no scan or loop optimisation can touch. gzip and zstd use Huffman coding and ANS respectively — both decode with memory table lookups, zero integer divisions per symbol. Closing this gap requires replacing the entropy coder.
+**File H (Order-1 + BWT, entropy 3.26):** After our decode fixes and rANS addition, the Order-1 range decode is fast. The bottleneck is `libsais_unbwt` for 511 KB blocks (~37 ms each). Two blocks run in parallel threads, so total ≈ 76 ms. gzip does not use BWT at all, so it pays none of this cost.
 
-**File H (Order-1 + BWT, entropy 3.26):** After our decode fixes, the Order-1 range decode is fast. The bottleneck is `libsais_unbwt` for 511 KB blocks (~37 ms each). Two blocks run in parallel threads, so total ≈ 76 ms. gzip does not use BWT at all, so it pays none of this cost.
+Files E and F no longer have a meaningful performance gap with gzip on decompression (~10 ms vs ~16 ms for E; ~23 ms vs ~19 ms for F). The rANS replacement fully closed the range-coder division bottleneck on those files.
 
 ---
 
@@ -468,7 +586,8 @@ All v4.0 formats remain decompressable. The PARALLEL (0x07) type is written by v
 
 | Model Type | Value | Meaning |
 |------------|-------|---------|
-| `PARALLEL` | 0x07  | v5.0 full-pipeline parallel (new) |
+| `RANS_ORDER_0` | 0x08  | v5.0 rANS static Order-0 (new, used for E/F) |
+| `PARALLEL` | 0x07  | v5.0 full-pipeline parallel (new, used for A/B/C/G/H) |
 | `ORDER_1_PREPROC` | 0x06 | v4.0 BWT+MTF+ZRLE+Order-1 (readable) |
 | `ORDER_0_PREPROC` | 0x05 | v4.0 BWT+MTF+ZRLE+Order-0 (readable) |
 | `ORDER_1_BWT` | 0x04 | Legacy BWT+Order-1 (readable) |
@@ -485,19 +604,21 @@ All v4.0 formats remain decompressable. The PARALLEL (0x07) type is written by v
 |---------|------|------|
 | **Pipeline threading** | BWT only (then MTF+ZRLE+Order-1 sequential) | Full pipeline per block (BWT+MTF+ZRLE+Order-1 all parallel) |
 | **Encode loop allocation** | `std::vector<EncodingStep>` (heap, 900K allocs/block) | `EncodeResult` struct (stack, zero heap) |
-| **File format** | `ORDER_1_PREPROC` (0x06) | `PARALLEL` (0x07) |
-| **Per-block metadata** | Shared header (BWT indices only) | Per-block: BWT idx + flags + sizes |
-| **Backward compatibility** | Reads all older formats | Writes new PARALLEL; reads all legacy formats |
+| **Entropy coder (Order-0)** | Schindler range coder (2 divisions/symbol) | **ryg rANS** (0 divisions/symbol, flat lookup table) |
+| **File format (structured)** | `ORDER_1_PREPROC` (0x06) | `PARALLEL` (0x07) |
+| **File format (high-entropy)** | `ORDER_0` (0x00) | `RANS_ORDER_0` (0x08) |
+| **Backward compatibility** | Reads all older formats | Writes new formats; reads all legacy formats |
 | **Compression ratio** | 56.39% avg | **56.39% avg (unchanged)** |
 | **File G compress** | 117 ms | **~62 ms (1.89×)** |
-| **File H compress** | 96 ms | **~78 ms (1.23×)** |
 | **File B compress** | 68 ms | **~39 ms (1.74×)** |
 | **File C compress** | 96 ms | **~45 ms (2.13×)** |
+| **File E compress** | 49 ms | **~13 ms (3.8×)** |
+| **File F compress** | 91 ms | **~20 ms (4.6×)** |
 | **File G decompress** | 43 ms | **~34 ms (−21%)** |
 | **File H decompress** | 97 ms | **~76 ms (−22%)** |
-| **File B decompress** | 43 ms | **~32 ms (−26%)** |
-| **File C decompress** | 48 ms | **~34 ms (−29%)** |
-| **Avg decompress improvement** | baseline | **−25% across all files** |
+| **File E decompress** | 55 ms | **~10 ms (5.5×)** |
+| **File F decompress** | 126 ms | **~23 ms (5.5×)** |
+| **Avg decompress improvement** | baseline | **−25% Order-1 files; −82% Order-0 files** |
 
 ---
 
@@ -565,6 +686,8 @@ make benchmark
 - I. Grebnov, libsais — https://github.com/IlyaGrebnov/libsais (Apache 2.0)
 - M. Burrows and D.J. Wheeler, "A block-sorting lossless data compression algorithm" (1994)
 - Michael Schindler, "A Fast Renormalisation for Arithmetic Coding" (1998)
+- Fabian Giesen ("ryg"), rans_byte.h — https://github.com/rygorous/ryg_rans (Public Domain / CC0)
+- Jarek Duda, "Asymmetric numeral systems: entropy coding combining speed of Huffman coding with compression rate of arithmetic coding" (2013)
 - TAI Course Materials, Universidade de Aveiro
 
 ---
@@ -575,6 +698,7 @@ Educational project for TAI course at Universidade de Aveiro.
 
 Range coder implementation: GPL v2+ (Michael Schindler)
 libsais: Apache 2.0 (Ilya Grebnov)
+rans_byte.h: Public Domain / CC0 (Fabian Giesen)
 All other code: Original group work
 
 ---

@@ -5,8 +5,9 @@
  *   - Zero runs → RUNA/RUNB sequence (bijective base-2)
  *   - Non-zero byte b → byte b+1  (shifts ranks 1-254 to bytes 2-255)
  *
- * MTF rank 255 maps to byte 256 which does not fit; it cannot occur in practice
- * after BWT+MTF (would require 256 unique bytes without any repeat in context).
+ * Note: rank 255 maps to byte 256 which overflows uint8_t to 0 (= RUNA),
+ * corrupting the stream. Callers must skip ZRLE for blocks containing MTF
+ * rank 255 (detected via has_rank255 guard in compressor.cpp).
  */
 std::vector<uint8_t> ZeroRunLengthEncoder::encode(const std::vector<uint8_t>& input,
                                                    size_t /* unused */) {

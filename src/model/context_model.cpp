@@ -131,10 +131,7 @@ void ContextModel::update_frequencies(uint8_t byte) {
         }
     }
 
-    // Rescale this context when total gets too large to stay adaptive
-    if (total1_[ctx] > RESCALE_THRESH) {
-        rescale_context(ctx);
-    }
+    if (total1_[ctx] > RESCALE_THRESH) { rescale_context(ctx); }
 }
 
 // ============================================================================

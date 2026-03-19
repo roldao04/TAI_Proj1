@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <cstring>
@@ -224,8 +225,12 @@ int main(int argc, char* argv[]) {
             if (use_mtf && model_type == ModelType::ORDER_1) {
                 std::cout << "Using parallel per-block pipeline (BWT+MTF+ZRLE+Order-1 per block)..." << std::endl;
 
-                const size_t BLOCK_SIZE = 1024 * 1024;
-                size_t num_blocks = (input_data.size() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                // Dynamic block sizing: divide file into even blocks,
+                // targeting at most MAX_BLOCK_SIZE bytes per block.
+                const size_t MAX_BLOCK_SIZE = 2000 * 1024;
+                size_t num_blocks = std::max<size_t>(1,
+                    (input_data.size() + MAX_BLOCK_SIZE - 1) / MAX_BLOCK_SIZE);
+                const size_t BLOCK_SIZE = (input_data.size() + num_blocks - 1) / num_blocks;
 
                 std::vector<StreamHeader::ParallelBlockMeta> block_metas(num_blocks);
                 std::vector<std::vector<uint8_t>> block_compressed(num_blocks);
@@ -240,7 +245,9 @@ int main(int argc, char* argv[]) {
                     std::vector<uint8_t> mtf_data  = MoveToFront::transform(bwt_data);
 
                     std::vector<uint8_t> zrle_data = ZeroRunLengthEncoder::encode(mtf_data);
-                    bool use_zrle_this = (zrle_preference != -1) &&
+                    bool has_rank255 = std::any_of(mtf_data.begin(), mtf_data.end(),
+                                                   [](uint8_t b){ return b == 255; });
+                    bool use_zrle_this = !has_rank255 && (zrle_preference != -1) &&
                                         (zrle_preference == 1 || zrle_data.size() < mtf_data.size());
                     const std::vector<uint8_t>& to_encode = use_zrle_this ? zrle_data : mtf_data;
 

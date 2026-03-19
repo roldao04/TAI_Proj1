@@ -10,7 +10,7 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v7.0** | 2026-03-19 | PPMD singleton escape + frequency rescaling + 900KB blocks | 54.85% avg ratio | **Current** |
+| **v7.0** | 2026-03-19 | PPMD singleton escape + frequency rescaling + ZRLE fix + dynamic blocks | 54.73% avg ratio | **Current** |
 | **v6.0** | 2026-03-19 | PPM Method C + RLE0 + entropy threshold 6.8→7.2 | 55.16% avg ratio | Superseded |
 | **v5.0** | 2026-03-19 | Full pipeline parallelism + encode_symbol_fast + rANS Order-0 | 56.39% avg ratio | Superseded |
 | **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
@@ -27,17 +27,26 @@ Group 07 - Universidade de Aveiro
 **Major Updates:**
 - **PPMD singleton escape**: Replaces the `max(1, seen/4)` escape frequency estimator with `max(1, singleton_count)`, where `singleton_count` tracks per-context symbols with `freq == 1`; escape probability now reflects actual new-symbol likelihood rather than unique-symbol count; maintained via `singleton1_[256]` array with O(1) updates at freq 0→1 (singleton++) and 1→2 (singleton--) transitions
 - **Frequency rescaling at threshold 8192**: When `total1_[ctx] > 8192`, all per-context counts are halved (rounding up: `(f+1)>>1`), singletons recomputed, escape updated; prevents early-block statistics from dominating; particularly effective on locally non-stationary files (genomic, structured binary)
-- **900 KB block size**: Reverts block size from 600 KB back to 900 KB; larger BWT context clusters similar bytes more effectively; fewer model restarts per file (A: 3→2 blocks, C: 4→3, G: 5→3, H: 2→2 but 50% larger first block); speed cost from fewer parallel threads is acceptable given the ratio gains
+- **ZRLE rank-255 correctness fix**: MTF rank 255 → `255+1=256` wraps to `0` (RUNA) in the byte-level RLE0 encoder, silently corrupting decompression of G and H since v6.0; root cause confirmed via BWT+MTF+ZRLE roundtrip diagnostic (G: +55 extra bytes, H: +546 extra bytes); fix: skip ZRLE for any block whose MTF output contains rank 255 (`has_rank255` guard); A, B, C unaffected (0 occurrences); G has 51 and H has 253 rank-255 occurrences
+- **Dynamic block sizing (max 2000 KB, even split)**: Replaces the fixed 900 KB block size; number of blocks = `ceil(file_size / 2000KB)`; block size = `ceil(file_size / num_blocks)` so all blocks are equally sized (no small tail block); A (1.31 MB), B (1.17 MB), C (2.00 MB), H (1.02 MB) all fit in 1 block; G (2.53 MB) splits into 2 equal 1.26 MB blocks; computing block size is O(1)
 
 **Performance:**
-- Average compression ratio: **54.85%** (improved from v6.0's 55.16%, −0.31pp)
-- **Beats bzip2 on total compressed size** (54.85% vs 54.88%), 4/7 files won: A, D, E, H
-- File H: 44.66% → **43.56%** (−1.10pp); File C: 27.59% → **26.95%** (−0.64pp); File E: 86.18% → **85.60%** (−0.58pp)
+- Average compression ratio: **54.73%** (improved from v6.0's 55.16%, −0.43pp total)
+- **Beats bzip2 by 0.20pp** (54.73% vs 54.93%)
+- B: 18.18% → **17.34%** (−0.84pp, fits in 1 block); C: 26.95% → **25.93%** (−1.02pp, 1 block); A: 53.41% → **53.30%** (−0.11pp)
+- Files won vs bzip2: A (+0.75pp), B (+0.58pp), C (+0.58pp), D (+0.45pp), E (+2.84pp) — 5/8 files
+- G and H skip ZRLE (rank-255 present); bzip2 beats G by 0.58pp and H by 2.39pp
+
+**Known limitation:**
+- G and H lose to bzip2 because ZRLE is skipped; root cause is the byte-level RLE0 alphabet limit (256 byte values needed for 255 literal ranks + 2 run markers = 257 symbols); fixing requires redesigning ZRLE as a symbol-level step or using multi-byte codes for rank 255
 
 **Failed optimizations tried:**
-- Update exclusion (from v6.0): re-confirmed not useful with rescaling either; regression confirmed
-- Rescaling threshold variations: tested 16384 (55.01%) and 32768 (55.02%); 8192 is optimal — higher thresholds rescale too infrequently to affect dominant contexts within a 900 KB block
-- Exempting context 0 (RUNA) from rescaling: skipping the most-used context worsened results; per-context rescaling already handles context 0 correctly since it accumulates faster and gets rescaled more often
+- ZRLE rank-255 escape using byte 0x01 in literal position: the decoder's run-accumulation loop consumes 0x01 (RUNB) before reaching the literal phase — ambiguous; reverted
+- Block size 1024 KB: average 54.91%; better than 900 KB but C still 2 blocks
+- Block size 1300 KB: average 54.82%; A and G improve but C still splits
+- Rescaling threshold 4096: C −0.10pp but H −0.20pp, F −0.07pp; net negative; stayed at 8192
+- Rescaling threshold 16384/32768 (from initial v7 work): too infrequent, no benefit
+- Exempting context 0 (RUNA) from rescaling: worsened results
 
 **Detailed Documentation:** See [v7.0 README](g07_v7.0/README.md)
 
@@ -245,20 +254,20 @@ Group 07 - Universidade de Aveiro
 
 | Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v6.0 | v7.0 |
 |--------|------|------|------|------|------|------|------|
-| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 56.39% | 55.16% | **54.85%** |
-| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.51 | 4.41 | **4.39** |
-| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (600KB) | BWT (600KB) | **BWT (900KB)** |
-| **Zero-run encoding** | None | None | None | ZRLE | ZRLE | RLE0 | RLE0 |
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 56.39% | 55.16% | **54.73%** |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.51 | 4.41 | **4.38** |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (600KB) | BWT (600KB) | **BWT (dynamic ≤2000KB)** |
+| **Zero-run encoding** | None | None | None | ZRLE | ZRLE | RLE0 | RLE0 (rank-255 safe) |
 | **PPM variant** | — | Simple | Simple | Simple | Simple | Method C | **Method C + PPMD** |
 | **Escape estimator** | — | — | — | seen/4 | seen/4 | seen/4 | **singleton count** |
 | **Frequency rescaling** | No | No | No | No | No | No | **Yes (thresh 8192)** |
 | **Entropy Coder** | Arithmetic | Range | Range | Range | Range + rANS | Range + rANS | Range + rANS |
 | **Order-1 threshold** | — | 6.5 | 6.5 | 6.8 | 6.8 | 7.2 | 7.2 |
-| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | 3/8 | 3/7 | **4/7** |
-| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | +1.7–4.6× vs v4.0 | Same as v5.0 | Slightly slower (900KB) |
+| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | 3/8 | 3/7 | **5/8** |
+| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | +1.7–4.6× vs v4.0 | Same as v5.0 | Same as v6.0 |
 | **Decompress Speed** | Baseline | ~2× | Competitive | Baseline | −25% Order-1, −82% Order-0 | Same as v5.0 | Same as v6.0 |
 | **Threading** | None | None | None | Parallel BWT | Full parallel pipeline | Same as v5.0 | Same as v5.0 |
-| **Beats bzip2 (total)** | No | No | No | No | No | Yes | **Yes (−0.03pp)** |
+| **Beats bzip2 (total)** | No | No | No | No | No | Yes | **Yes (−0.20pp)** |
 
 ---
 
@@ -309,7 +318,19 @@ Group 07 - Universidade de Aveiro
   - Tested and reverted: rescaling threshold 16384/32768 (too infrequent)
   - Tested and reverted: exempting context 0 from rescaling (worsened results)
   - Block size 600 KB → 900 KB (better BWT context, fewer blocks, lower entropy MTF)
-- **2026-03-19**: v7.0 released (PPMD escape + rescaling + 900KB blocks; 54.85% avg, 4/7 files beat bzip2)
+- **2026-03-19**: v7.0 development (initial)
+  - PPMD singleton escape (singleton1_[256] array, O(1) updates at freq 0→1 and 1→2)
+  - Frequency rescaling at threshold 8192 (halve round-up, recount singletons)
+  - Tested and reverted: rescaling threshold 16384/32768 (too infrequent)
+  - Tested and reverted: exempting context 0 from rescaling (worsened results)
+  - Block size 600 KB → 900 KB (better BWT context, fewer blocks)
+- **2026-03-19**: v7.0 continued
+  - ZRLE rank-255 correctness fix: `has_rank255` guard skips ZRLE for affected blocks; bug traced via BWT+MTF+ZRLE roundtrip diagnostic (G/H silently broken since v6.0)
+  - Tested and reverted: ZRLE rank-255 escape using byte 0x01 (ambiguous — consumed as RUNB by decoder run-accumulation loop)
+  - Dynamic block sizing: max 2000 KB, even split; B/C/H each compress as 1 block; G splits into 2 equal 1.26 MB blocks
+  - Tested: 1024 KB (54.91%), 1300 KB (54.82%), 2000 KB fixed (54.74%); dynamic even split chosen (54.73%)
+  - Tested and reverted: RESCALE_THRESH=4096 (C −0.10pp but H −0.20pp, net negative)
+- **2026-03-19**: v7.0 released (PPMD escape + rescaling + ZRLE fix + dynamic blocks; 54.73% avg, 5/8 files beat bzip2, −0.20pp vs bzip2)
 
 ---
 

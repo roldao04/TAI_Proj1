@@ -47,9 +47,9 @@ void print_usage(const char* program_name) {
     std::cerr << "  --yes, -y         Skip interactive prompts (useful for automation/benchmarks)" << std::endl;
     std::cerr << "\nAuto-selection rules (based on benchmark results):" << std::endl;
     std::cerr << "  Entropy > 7.5 → UNCOMPRESSED (incompressible, e.g., already compressed)" << std::endl;
-    std::cerr << "  Entropy 6.8-7.5 → Order-0 (high entropy, Order-1 too slow for marginal gain)" << std::endl;
-    std::cerr << "  File < 100KB → Order-0 (adaptive overhead not worth it)" << std::endl;
-    std::cerr << "  Otherwise → Order-1 (low entropy, achieves 20-50% better compression)" << std::endl;
+    std::cerr << "  Entropy 7.2-7.5 → rANS Order-0 (very high entropy, Order-1 gain marginal)" << std::endl;
+    std::cerr << "  File < 100KB → rANS Order-0 (adaptive overhead not worth it)" << std::endl;
+    std::cerr << "  Otherwise → Order-1 (entropy <= 7.2, achieves best compression)" << std::endl;
     std::cerr << "\nNotes:" << std::endl;
     std::cerr << "  - Order-1 uses simplified encoding (no PPM Method C exclusions)" << std::endl;
     std::cerr << "  - Order-2 removed (provided no benefit over Order-1)" << std::endl;
@@ -138,15 +138,15 @@ int main(int argc, char* argv[]) {
             if (entropy > 7.5) {
                 model_type = ModelType::UNCOMPRESSED;
                 std::cout << "Decision: UNCOMPRESSED (entropy " << entropy << " > 7.5, incompressible)" << std::endl;
-            } else if (entropy > 6.8) {
+            } else if (entropy > 7.2) {
                 model_type = ModelType::RANS_ORDER_0;
-                std::cout << "Decision: rANS Order-0 (high entropy " << entropy << " > 6.8, marginal compression benefit)" << std::endl;
+                std::cout << "Decision: rANS Order-0 (high entropy " << entropy << " > 7.2, Order-1 gain marginal)" << std::endl;
             } else if (input_data.size() < 102400) {
                 model_type = ModelType::RANS_ORDER_0;
                 std::cout << "Decision: rANS Order-0 (small file < 100KB)" << std::endl;
             } else {
                 model_type = ModelType::ORDER_1;
-                std::cout << "Decision: Order-1 (entropy " << entropy << " < 6.8, good compression expected)" << std::endl;
+                std::cout << "Decision: Order-1 (entropy " << entropy << " <= 7.2, good compression expected)" << std::endl;
             }
         } else {
             std::cout << "Using user-specified model" << std::endl;
@@ -154,10 +154,10 @@ int main(int argc, char* argv[]) {
 
         if (!auto_select && model_type == ModelType::ORDER_1) {
             double entropy = EntropyCalculator::calculate(input_data, 8192);
-            if (entropy > 6.8) {
-                std::cerr << "\n⚠️  WARNING: Order-1 not recommended for high-entropy files!" << std::endl;
-                std::cerr << "    Detected entropy: " << entropy << " bits/symbol (threshold: 6.8)" << std::endl;
-                std::cerr << "    Expected issues: Very slow compression (10-30s), possible timeout on decompression" << std::endl;
+            if (entropy > 7.2) {
+                std::cerr << "\n⚠️  WARNING: Order-1 not recommended for very high-entropy files!" << std::endl;
+                std::cerr << "    Detected entropy: " << entropy << " bits/symbol (threshold: 7.2)" << std::endl;
+                std::cerr << "    Expected issues: Marginal compression gain over rANS Order-0." << std::endl;
                 std::cerr << "    Recommendation: Use --model auto (automatic selection) or --model order0" << std::endl;
 
                 if (force_mode) {

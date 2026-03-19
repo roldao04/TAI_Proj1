@@ -62,6 +62,7 @@ private:
     uint32_t freq1_[256][258]; // freq1_[ctx][s]
     uint32_t total1_[256];
     uint32_t seen1_[256];      // unique non-escape bytes seen per context
+    uint32_t singleton1_[256]; // symbols with freq == 1 (PPMD escape estimator)
     bool     ctx_exists_[256]; // has this context been initialised?
 
     // ── History ───────────────────────────────────────────────────────────
@@ -92,6 +93,9 @@ public:
 
     void update_history(uint8_t byte);
     void update_frequencies(uint8_t byte);
+    // Update exclusion: only update Order-1 (not Order-0) after an escape.
+    // Used when a symbol was encoded/decoded via Order-0 fallback from Order-1.
+    void update_order1_only(uint8_t byte);
     void reset();
 
     void get_symbol_range(int order, int symbol,

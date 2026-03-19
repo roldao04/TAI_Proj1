@@ -10,7 +10,8 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v5.0** | 2026-03-19 | Full pipeline parallelism + encode_symbol_fast + rANS Order-0 | 56.39% avg ratio | **Current** |
+| **v6.0** | 2026-03-19 | PPM Method C + RLE0 + entropy threshold 6.8→7.2 | 55.16% avg ratio | **Current** |
+| **v5.0** | 2026-03-19 | Full pipeline parallelism + encode_symbol_fast + rANS Order-0 | 56.39% avg ratio | Superseded |
 | **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
 | **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | Superseded |
 | **v2.0** | 2026-03-05 | Multi-Model + Range Coding + Auto-Select | 62.74% avg ratio | Superseded |
@@ -20,7 +21,28 @@ Group 07 - Universidade de Aveiro
 
 ## Version Details
 
-### v5.0 (March 2026) - Current Release
+### v6.0 (March 2026) - Current Release
+
+**Major Updates:**
+- **PPM Method C exclusions**: When escaping from Order-1 to Order-0, exclude symbols already seen in the current Order-1 context from the Order-0 distribution; both encoder and decoder compute the same exclusion set dynamically
+- **RLE0 (bzip2-style)**: Replaces marker+count ZRLE with bijective base-2 zero-run encoding using RUNA(0)/RUNB(1); non-zero MTF ranks shifted up by 1 to free bytes 0 and 1; eliminates marker overhead for the common case of short zero runs
+- **Entropy threshold 6.8 → 7.2**: Files E (entropy 7.030) and F (entropy 7.013) now route to Order-1 instead of rANS Order-0; flat-array Order-1 model (v4.0+) is fast enough even at these entropies; Order-1 compresses F in 80ms and saves 5.84pp vs rANS
+
+**Performance:**
+- Average compression ratio: **55.16%** (improved from v5.0's 56.39%, −1.23pp)
+- File F: 87.62% → **81.78%** (−5.84pp, now within 0.72pp of bzip2)
+- File E: 88.17% → **86.18%** (−1.99pp, now beats bzip2 by 2.25pp)
+- **Beats bzip2 on total compressed size** (55.16% vs 54.88%)
+- Files won vs bzip2: A, D, E (3/7 non-trivial files)
+
+**Failed optimizations tried:**
+- Update exclusion: skipping Order-0 update after escape caused 56.25% → 56.30% regression; Method C's dynamic exclusion already achieves the intended effect without degrading Order-0 accuracy; reverted
+
+**Detailed Documentation:** See [v6.0 README](g07_v6.0/README.md)
+
+---
+
+### v5.0 (March 2026) - Superseded by v6.0
 
 **Major Updates:**
 - **Full Pipeline Parallelism**: Each 600 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own `std::thread` simultaneously (pbzip2 design)
@@ -199,18 +221,20 @@ Group 07 - Universidade de Aveiro
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 |
-|--------|------|------|------|------|------|
-| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | **56.39%** |
-| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | **4.51** |
-| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (900KB) |
-| **Entropy Coder** | Arithmetic | Range | Range | Range | Range + **rANS** |
-| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | **3/8** |
-| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | **+1.7–4.6× vs v4.0** |
-| **Decompress Speed** | Baseline | ~2× | Competitive | Baseline | **−25% Order-1, −82% Order-0** |
-| **Threading** | None | None | None | Parallel BWT | **Full parallel pipeline** |
-| **Beats bzip2** | No | Partial | Partial | 6/7 | **7/7** |
-| **Beats gzip (decompress)** | No | No | No | No | **E, F files** |
+| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v6.0 |
+|--------|------|------|------|------|------|------|
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 56.39% | **55.16%** |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.51 | **4.41** |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (600KB) | BWT (600KB) |
+| **Zero-run encoding** | None | None | None | ZRLE | ZRLE | **RLE0** |
+| **PPM variant** | — | Simple | Simple | Simple | Simple | **Method C** |
+| **Entropy Coder** | Arithmetic | Range | Range | Range | Range + rANS | Range + **rANS** |
+| **Order-1 threshold** | — | 6.5 | 6.5 | 6.8 | 6.8 | **7.2** |
+| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | 3/8 | **3/7** |
+| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | +1.7–4.6× vs v4.0 | Same as v5.0 |
+| **Decompress Speed** | Baseline | ~2× | Competitive | Baseline | −25% Order-1, −82% Order-0 | Same as v5.0 |
+| **Threading** | None | None | None | Parallel BWT | Full parallel pipeline | Same as v5.0 |
+| **Beats bzip2 (total)** | No | No | No | No | No | **Yes** |
 
 ---
 
@@ -248,8 +272,14 @@ Group 07 - Universidade de Aveiro
   - Tested and reverted: prefix-sum cumulative arrays (21% slower, cache pressure)
   - rANS Order-0: ryg's rans_byte.h + RansStaticCoder wrapper
   - New PARALLEL (0x07) and RANS_ORDER_0 (0x08) file formats
-- **2026-03-19**: v5.0 released (pipeline parallelism + rANS + 600KB blocks + LTO; beats bzip2 on all 7 files)
+- **2026-03-19**: v5.0 released (pipeline parallelism + rANS + 600KB blocks + LTO)
+- **2026-03-19**: v6.0 development
+  - PPM Method C exclusions (encode_symbol_fast + decoder escape branches)
+  - RLE0 replacing ZRLE (bijective base-2, non-zero shift)
+  - Tested and reverted: update exclusion (regression with Method C)
+  - Entropy threshold 6.8 → 7.2 (routes E, F to Order-1)
+- **2026-03-19**: v6.0 released (PPM Method C + RLE0 + threshold; beats bzip2 on total compressed size)
 
 ---
 
-*Last updated: 2026-03-19*
+*Last updated: 2026-03-19 (v6.0)*

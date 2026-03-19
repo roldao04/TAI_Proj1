@@ -14,11 +14,12 @@ ContextModel::ContextModel()
       prev_byte_(0),
       has_prev_(false)
 {
-    std::memset(freq0_,      0, sizeof(freq0_));
-    std::memset(freq1_,      0, sizeof(freq1_));
-    std::memset(total1_,     0, sizeof(total1_));
-    std::memset(seen1_,      0, sizeof(seen1_));
-    std::memset(ctx_exists_, 0, sizeof(ctx_exists_));
+    std::memset(freq0_,       0, sizeof(freq0_));
+    std::memset(freq1_,       0, sizeof(freq1_));
+    std::memset(total1_,      0, sizeof(total1_));
+    std::memset(seen1_,       0, sizeof(seen1_));
+    std::memset(singleton1_,  0, sizeof(singleton1_));
+    std::memset(ctx_exists_,  0, sizeof(ctx_exists_));
 }
 
 void ContextModel::reset() {
@@ -40,6 +41,7 @@ void ContextModel::init_adaptive() {
     std::memset(freq1_,      0, sizeof(freq1_));
     std::memset(total1_,     0, sizeof(total1_));
     std::memset(seen1_,      0, sizeof(seen1_));
+    std::memset(singleton1_, 0, sizeof(singleton1_));
     std::memset(ctx_exists_, 0, sizeof(ctx_exists_));
     has_prev_ = false;
 }
@@ -92,28 +94,88 @@ void ContextModel::update_frequencies(uint8_t byte) {
     uint8_t ctx = prev_byte_;
 
     if (!ctx_exists_[ctx]) {
-        // First byte ever seen in this context
+        // First byte ever seen in this context — it is a singleton
         ctx_exists_[ctx]    = true;
         freq1_[ctx][byte]   = 1;
-        freq1_[ctx][256]    = 1;   // escape freq = max(1, 1/4) = 1
+        freq1_[ctx][256]    = 1;   // escape = max(1, singleton_count=1)
         seen1_[ctx]         = 1;
+        singleton1_[ctx]    = 1;
         total1_[ctx]        = 2;   // byte(1) + escape(1)
         return;
     }
 
     if (freq1_[ctx][byte] == 0) {
-        // New symbol in existing context — update escape too
-        uint32_t old_esc = std::max(1u, seen1_[ctx] / 4);
+        // New symbol — becomes a singleton; update escape with PPMD estimator
+        uint32_t old_esc = std::max(1u, singleton1_[ctx]);
         seen1_[ctx]++;
-        uint32_t new_esc = std::max(1u, seen1_[ctx] / 4);
+        singleton1_[ctx]++;
+        uint32_t new_esc = std::max(1u, singleton1_[ctx]);
 
         freq1_[ctx][byte]  = 1;
         freq1_[ctx][256]   = new_esc;
         total1_[ctx]      += 1 + (new_esc - old_esc);
     } else {
-        // Existing symbol
-        freq1_[ctx][byte]++;
-        total1_[ctx]++;
+        if (freq1_[ctx][byte] == 1) {
+            // Singleton becoming non-singleton — escape drops
+            uint32_t old_esc = std::max(1u, singleton1_[ctx]);
+            if (singleton1_[ctx] > 0) singleton1_[ctx]--;
+            uint32_t new_esc = std::max(1u, singleton1_[ctx]);
+
+            freq1_[ctx][byte]++;
+            freq1_[ctx][256]  = new_esc;
+            total1_[ctx]     += 1 + (int32_t)(new_esc - old_esc);
+        } else {
+            // Existing non-singleton symbol — no change to escape
+            freq1_[ctx][byte]++;
+            total1_[ctx]++;
+        }
+    }
+}
+
+// ============================================================================
+// update_order1_only — update exclusion variant
+// Called after an escape: add symbol to Order-1 context only, skip Order-0.
+// ============================================================================
+
+void ContextModel::update_order1_only(uint8_t byte) {
+    // Skip Order-0 update intentionally (update exclusion)
+
+    if (!has_prev_) return;
+
+    uint8_t ctx = prev_byte_;
+
+    if (!ctx_exists_[ctx]) {
+        ctx_exists_[ctx]    = true;
+        freq1_[ctx][byte]   = 1;
+        freq1_[ctx][256]    = 1;
+        seen1_[ctx]         = 1;
+        singleton1_[ctx]    = 1;
+        total1_[ctx]        = 2;
+        return;
+    }
+
+    if (freq1_[ctx][byte] == 0) {
+        uint32_t old_esc = std::max(1u, singleton1_[ctx]);
+        seen1_[ctx]++;
+        singleton1_[ctx]++;
+        uint32_t new_esc = std::max(1u, singleton1_[ctx]);
+
+        freq1_[ctx][byte]  = 1;
+        freq1_[ctx][256]   = new_esc;
+        total1_[ctx]      += 1 + (new_esc - old_esc);
+    } else {
+        if (freq1_[ctx][byte] == 1) {
+            uint32_t old_esc = std::max(1u, singleton1_[ctx]);
+            if (singleton1_[ctx] > 0) singleton1_[ctx]--;
+            uint32_t new_esc = std::max(1u, singleton1_[ctx]);
+
+            freq1_[ctx][byte]++;
+            freq1_[ctx][256]  = new_esc;
+            total1_[ctx]     += 1 + (int32_t)(new_esc - old_esc);
+        } else {
+            freq1_[ctx][byte]++;
+            total1_[ctx]++;
+        }
     }
 }
 

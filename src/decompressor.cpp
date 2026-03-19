@@ -64,38 +64,35 @@ int main(int argc, char* argv[]) {
                 ctx_model.init_adaptive();
                 RangeDecoder decoder(encoded);
 
-                std::vector<uint8_t> decoded;
-                decoded.reserve(meta.preprocessed_block_size);
+                std::vector<uint8_t> decoded(meta.preprocessed_block_size);
 
-                while (decoded.size() < meta.preprocessed_block_size) {
-                    int current_order = (ctx_model.get_history_size() > 0) ? 1 : 0;
-                    uint8_t decoded_byte = 0;
-                    bool symbol_found = false;
+                for (size_t si = 0; si < meta.preprocessed_block_size; ++si) {
+                    uint32_t lo, hi, total;
+                    int sym;
 
-                    while (current_order >= 0 && !symbol_found) {
-                        uint32_t total_freq = ctx_model.get_total_freq(current_order);
-                        if (total_freq == 0) { current_order--; continue; }
-
-                        uint32_t cum_freq = decoder.get_current_count(total_freq);
-                        int symbol = ctx_model.find_symbol(current_order, cum_freq);
-                        if (symbol < 0) throw std::runtime_error("Symbol not found during decompression");
-
-                        uint32_t lo, hi, total;
-                        ctx_model.get_symbol_range(current_order, symbol, lo, hi, total);
+                    if (ctx_model.has_order1_context()) {
+                        uint32_t cum = decoder.get_current_count(ctx_model.get_order1_total());
+                        sym = ctx_model.find_symbol_and_get_range(1, cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                         decoder.decode_symbol(lo, hi, total);
-
-                        if (symbol == 256) {
-                            current_order--;
-                        } else {
-                            decoded_byte = static_cast<uint8_t>(symbol);
-                            symbol_found = true;
+                        if (sym == 256) {
+                            // Escape: fall back to order-0
+                            cum = decoder.get_current_count(ctx_model.get_order0_total());
+                            sym = ctx_model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                            if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                            decoder.decode_symbol(lo, hi, total);
                         }
+                    } else {
+                        uint32_t cum = decoder.get_current_count(ctx_model.get_order0_total());
+                        sym = ctx_model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                        decoder.decode_symbol(lo, hi, total);
                     }
 
-                    if (!symbol_found) throw std::runtime_error("Failed to decode symbol");
-                    decoded.push_back(decoded_byte);
-                    ctx_model.update_frequencies(decoded_byte);
-                    ctx_model.update_history(decoded_byte);
+                    uint8_t b = static_cast<uint8_t>(sym);
+                    decoded[si] = b;
+                    ctx_model.update_frequencies(b);
+                    ctx_model.update_history(b);
                 }
 
                 if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_ZRLE)) {
@@ -181,8 +178,9 @@ int main(int argc, char* argv[]) {
             std::cout << "Decoding with Order-0 model..." << std::endl;
             RangeDecoder decoder(encoded_data);
 
+            const uint32_t total_freq = model.get_total_freq();
             while (output_data.size() < header.preprocessed_size) {
-                uint32_t cum_freq = decoder.get_current_count(model.get_total_freq());
+                uint32_t cum_freq = decoder.get_current_count(total_freq);
                 int symbol = model.find_symbol(cum_freq);
 
                 if (symbol == FrequencyModel::get_eof_symbol()) {
@@ -193,7 +191,7 @@ int main(int argc, char* argv[]) {
 
                 uint32_t cum_freq_low, cum_freq_high;
                 model.get_symbol_range(symbol, cum_freq_low, cum_freq_high);
-                decoder.decode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+                decoder.decode_symbol(cum_freq_low, cum_freq_high, total_freq);
             }
 
         } else if (header.is_order1()) {
@@ -208,55 +206,35 @@ int main(int argc, char* argv[]) {
             std::vector<uint8_t> encoded_data(compressed_data.begin() + header.payload_offset, compressed_data.end());
             RangeDecoder decoder(encoded_data);
 
-            while (output_data.size() < header.preprocessed_size) {
-                int current_order = std::min(static_cast<int>(model.get_history_size()), 2);
+            output_data.resize(header.preprocessed_size);
 
-                if (current_order > 1) {
-                    current_order = 1;
+            for (size_t si = 0; si < header.preprocessed_size; ++si) {
+                uint32_t lo, hi, total;
+                int sym;
+
+                if (model.has_order1_context()) {
+                    uint32_t cum = decoder.get_current_count(model.get_order1_total());
+                    sym = model.find_symbol_and_get_range(1, cum, lo, hi, total);
+                    if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                    decoder.decode_symbol(lo, hi, total);
+                    if (sym == 256) {
+                        // Escape: fall back to order-0
+                        cum = decoder.get_current_count(model.get_order0_total());
+                        sym = model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                        decoder.decode_symbol(lo, hi, total);
+                    }
+                } else {
+                    uint32_t cum = decoder.get_current_count(model.get_order0_total());
+                    sym = model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                    if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                    decoder.decode_symbol(lo, hi, total);
                 }
 
-                uint8_t decoded_byte = 0;
-                bool symbol_found = false;
-
-                while (current_order >= 0 && !symbol_found) {
-                    uint32_t total_freq = model.get_total_freq(current_order);
-
-                    if (total_freq == 0) {
-                        current_order--;
-                        continue;
-                    }
-
-                    uint32_t cum_freq = decoder.get_current_count(total_freq);
-                    int symbol = model.find_symbol(current_order, cum_freq);
-
-                    if (symbol < 0) {
-                        throw std::runtime_error("Symbol not found during decompression");
-                    }
-
-                    if (symbol == 256) {
-                        uint32_t cum_freq_low, cum_freq_high, total;
-                        model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
-                        decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
-
-                        current_order--;
-                    } else {
-                        uint32_t cum_freq_low, cum_freq_high, total;
-                        model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
-                        decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
-
-                        decoded_byte = static_cast<uint8_t>(symbol);
-                        symbol_found = true;
-                    }
-                }
-
-                if (!symbol_found) {
-                    throw std::runtime_error("Failed to decode symbol");
-                }
-
-                output_data.push_back(decoded_byte);
-
-                model.update_frequencies(decoded_byte);
-                model.update_history(decoded_byte);
+                uint8_t b = static_cast<uint8_t>(sym);
+                output_data[si] = b;
+                model.update_frequencies(b);
+                model.update_history(b);
             }
         } else if (model_type == ModelType::UNCOMPRESSED) {
             std::cout << "Copying uncompressed data..." << std::endl;

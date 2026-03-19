@@ -325,6 +325,45 @@ void ContextModel::get_symbol_range_with_exclusions(int order, int symbol,
     total = tot;
 }
 
+int ContextModel::find_symbol_and_get_range(int order, uint32_t target,
+                                             uint32_t& lo, uint32_t& hi,
+                                             uint32_t& total) const {
+    if (order == 0) {
+        total = total0_;
+        uint32_t cum = 0;
+        for (int s = 0; s < 258; s++) {
+            uint32_t f = freq0_[s];
+            if (f) {
+                uint32_t next = cum + f;
+                if (next > target) {
+                    lo = cum;
+                    hi = next;
+                    return s;
+                }
+                cum = next;
+            }
+        }
+        return -1;
+    } else {
+        const uint32_t* f = freq1_[prev_byte_];
+        total = total1_[prev_byte_];
+        uint32_t cum = 0;
+        for (int s = 0; s < 257; s++) {
+            uint32_t fs = f[s];
+            if (fs) {
+                uint32_t next = cum + fs;
+                if (next > target) {
+                    lo = cum;
+                    hi = next;
+                    return s;
+                }
+                cum = next;
+            }
+        }
+        return -1;
+    }
+}
+
 int ContextModel::find_symbol_with_exclusions(int order, uint32_t cum_freq,
                                                const std::vector<int>& excluded) const {
     const uint32_t* src = (order == 0) ? freq0_ : freq1_[prev_byte_];

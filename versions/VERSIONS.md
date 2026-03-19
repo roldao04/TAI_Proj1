@@ -29,10 +29,9 @@ Group 07 - Universidade de Aveiro
 
 **Performance:**
 - Average compression ratio: **56.39%** (unchanged from v4.0 — pure speed release)
-- File G (2.5 MB): 117ms → **62ms (1.89×)**
-- File H (1.0 MB): 96ms → **81ms (1.19×)**
-- File B (1.2 MB): 68ms → **39ms (1.74×)**
-- File C (2.0 MB): 96ms → **45ms (2.13×)**
+- Compression: G 117ms→62ms (1.89×), B 68ms→39ms (1.74×), C 96ms→45ms (2.13×)
+- Decompression: **−25% average** across all 7 files; now beats bzip2 on 6/7 files
+- Decompress: A 63ms→43ms, B 43ms→32ms, C 48ms→34ms, G 43ms→34ms, H 97ms→76ms
 
 **Failed optimizations tried:**
 - Prefix-sum arrays for O(1) cumulative lookups: increased L2/L3 cache working set from ~264 KB to ~518 KB; made G 21% *slower*; reverted

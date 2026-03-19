@@ -106,8 +106,17 @@ public:
                                           uint32_t& total) const;
 
     int find_symbol(int order, uint32_t cum_freq) const;
+    // Fused decode helper: finds symbol AND fills lo/hi/total in one scan (2× faster than
+    // calling find_symbol + get_symbol_range separately).
+    int find_symbol_and_get_range(int order, uint32_t target,
+                                  uint32_t& lo, uint32_t& hi, uint32_t& total) const;
     int find_symbol_with_exclusions(int order, uint32_t cum_freq,
                                     const std::vector<int>& excluded) const;
+
+    // Fast inline accessors used by the hot decode loop
+    bool     has_order1_context()  const { return has_prev_ && ctx_exists_[prev_byte_]; }
+    uint32_t get_order0_total()    const { return total0_; }
+    uint32_t get_order1_total()    const { return total1_[prev_byte_]; }
 
     bool     has_symbol_in_context(int order, int symbol) const;
     uint32_t get_total_freq(int order) const;

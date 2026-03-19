@@ -108,6 +108,7 @@ bool Header::is_order0() const {
     return model_type == ModelType::ORDER_0 ||
            model_type == ModelType::ORDER_0_BWT ||
            model_type == ModelType::ORDER_0_PREPROC;
+    // Note: RANS_ORDER_0 is handled separately; not included here.
 }
 
 bool Header::is_order1() const {
@@ -192,6 +193,7 @@ Header parse_header(const std::vector<uint8_t>& data) {
     } else if (header.model_type != ModelType::ORDER_0 &&
                header.model_type != ModelType::ORDER_1 &&
                header.model_type != ModelType::ORDER_2 &&
+               header.model_type != ModelType::RANS_ORDER_0 &&
                header.model_type != ModelType::UNCOMPRESSED) {
         throw std::runtime_error("Unknown model type");
     }
@@ -258,6 +260,8 @@ std::string describe_model_type(const Header& header) {
             return describe_preprocessed_order(header, "Order-1");
         case ModelType::PARALLEL:
             return "Parallel (per-block BWT+MTF+ZRLE+Order-1)";
+        case ModelType::RANS_ORDER_0:
+            return "rANS Order-0 (static)";
         case ModelType::UNCOMPRESSED:
             return "Uncompressed";
     }

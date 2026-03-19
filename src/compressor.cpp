@@ -5,6 +5,7 @@
 #include <thread>
 #include <utility>
 #include "arithmetic/range_coder.h"
+#include "arithmetic/rans_static.h"
 #include "model/frequency_model.h"
 #include "model/context_model.h"
 #include "utils/file_io.h"
@@ -93,7 +94,7 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 std::string model_name = argv[i + 1];
                 if (model_name == "order0") {
-                    model_type = ModelType::ORDER_0;
+                    model_type = ModelType::RANS_ORDER_0;
                     auto_select = false;
                 } else if (model_name == "order1") {
                     model_type = ModelType::ORDER_1;
@@ -138,11 +139,11 @@ int main(int argc, char* argv[]) {
                 model_type = ModelType::UNCOMPRESSED;
                 std::cout << "Decision: UNCOMPRESSED (entropy " << entropy << " > 7.5, incompressible)" << std::endl;
             } else if (entropy > 6.8) {
-                model_type = ModelType::ORDER_0;
-                std::cout << "Decision: Order-0 (high entropy " << entropy << " > 6.8, marginal compression benefit)" << std::endl;
+                model_type = ModelType::RANS_ORDER_0;
+                std::cout << "Decision: rANS Order-0 (high entropy " << entropy << " > 6.8, marginal compression benefit)" << std::endl;
             } else if (input_data.size() < 102400) {
-                model_type = ModelType::ORDER_0;
-                std::cout << "Decision: Order-0 (small file < 100KB)" << std::endl;
+                model_type = ModelType::RANS_ORDER_0;
+                std::cout << "Decision: rANS Order-0 (small file < 100KB)" << std::endl;
             } else {
                 model_type = ModelType::ORDER_1;
                 std::cout << "Decision: Order-1 (entropy " << entropy << " < 6.8, good compression expected)" << std::endl;
@@ -348,13 +349,13 @@ int main(int argc, char* argv[]) {
         }
 
         if (use_bwt && use_mtf) {
-            if (model_type == ModelType::ORDER_0) {
+            if (model_type == ModelType::ORDER_0 || model_type == ModelType::RANS_ORDER_0) {
                 model_type = ModelType::ORDER_0_PREPROC;
             } else if (model_type == ModelType::ORDER_1) {
                 model_type = ModelType::ORDER_1_PREPROC;
             }
         } else if (use_bwt) {
-            if (model_type == ModelType::ORDER_0) {
+            if (model_type == ModelType::ORDER_0 || model_type == ModelType::RANS_ORDER_0) {
                 model_type = ModelType::ORDER_0_BWT;
             } else if (model_type == ModelType::ORDER_1) {
                 model_type = ModelType::ORDER_1_BWT;
@@ -369,7 +370,27 @@ int main(int argc, char* argv[]) {
                                    transform_flags,
                                    bwt_primary_indices);
 
-        if (model_type == ModelType::ORDER_0 ||
+        if (model_type == ModelType::RANS_ORDER_0) {
+            std::cout << "Using rANS Order-0 (static, zero-division decode)..." << std::endl;
+
+            // Build raw frequency table (257 symbols: 0-255 + EOF)
+            std::array<uint32_t, RansStaticCoder::ALPHABET> raw_freq{};
+            for (uint8_t b : data_to_encode) raw_freq[b]++;
+            raw_freq[RansStaticCoder::EOF_SYMBOL] = 1;  // ensure EOF present
+
+            RansStaticCoder rans;
+            std::array<uint16_t, RansStaticCoder::ALPHABET> scaled = rans.build_encode_table(raw_freq);
+            std::vector<uint8_t> rans_stream = rans.encode(data_to_encode);
+
+            // Write scaled frequencies (257 × 2 bytes) then rANS bitstream
+            output_data.push_back(static_cast<uint8_t>(RansStaticCoder::SCALE_BITS));
+            for (int i = 0; i < RansStaticCoder::ALPHABET; i++) {
+                output_data.push_back(scaled[i] & 0xFF);
+                output_data.push_back((scaled[i] >> 8) & 0xFF);
+            }
+            output_data.insert(output_data.end(), rans_stream.begin(), rans_stream.end());
+
+        } else if (model_type == ModelType::ORDER_0 ||
             model_type == ModelType::ORDER_0_BWT ||
             model_type == ModelType::ORDER_0_PREPROC) {
             std::cout << "Using Order-0 frequency model..." << std::endl;

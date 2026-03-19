@@ -17,6 +17,7 @@ enum class ModelType : uint8_t {
     ORDER_0_PREPROC = 5,
     ORDER_1_PREPROC = 6,
     PARALLEL = 7,       // fully independent per-block pipeline (BWT+MTF+ZRLE+Order1 per block)
+    RANS_ORDER_0 = 8,   // rANS (ryg) static Order-0 — zero-division decode
     UNCOMPRESSED = 255
 };
 

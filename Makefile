@@ -14,6 +14,7 @@ BIN_DIR = bin
 
 # Source files
 RANGE_SRC = $(SRC_DIR)/arithmetic/range_coder.cpp
+RANS_SRC = $(SRC_DIR)/arithmetic/rans_static.cpp
 MODEL_SRC = $(SRC_DIR)/model/frequency_model.cpp
 CONTEXT_SRC = $(SRC_DIR)/model/context_model.cpp
 UTILS_SRC = $(SRC_DIR)/utils/file_io.cpp
@@ -28,6 +29,7 @@ DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
 
 # Object files
 RANGE_OBJ = $(OBJ_DIR)/range_coder.o
+RANS_OBJ = $(OBJ_DIR)/rans_static.o
 LIBSAIS_OBJ = $(OBJ_DIR)/libsais.o
 MODEL_OBJ = $(OBJ_DIR)/frequency_model.o
 CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
@@ -41,7 +43,7 @@ COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
 DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
 
 # Common objects (used by both compressor and decompressor)
-COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ) $(LIBSAIS_OBJ)
+COMMON_OBJS = $(RANGE_OBJ) $(RANS_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ) $(LIBSAIS_OBJ)
 
 # Executables
 COMPRESSOR = $(BIN_DIR)/compress
@@ -62,6 +64,9 @@ $(BIN_DIR):
 
 # Compile object files
 $(RANGE_OBJ): $(RANGE_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(RANS_OBJ): $(RANS_SRC) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(MODEL_OBJ): $(MODEL_SRC) | $(OBJ_DIR)

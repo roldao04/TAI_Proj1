@@ -3,6 +3,7 @@
 #include <array>
 #include <thread>
 #include "arithmetic/range_coder.h"
+#include "arithmetic/rans_static.h"
 #include "model/frequency_model.h"
 #include "model/context_model.h"
 #include "utils/file_io.h"
@@ -35,6 +36,65 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading compressed file: " << input_filename << std::endl;
         std::vector<uint8_t> compressed_data = FileIO::read_file(input_filename);
         std::cout << "Compressed size: " << compressed_data.size() << " bytes" << std::endl;
+
+        // Handle rANS Order-0 format
+        if (!compressed_data.empty() &&
+            static_cast<ModelType>(compressed_data[0]) == ModelType::RANS_ORDER_0) {
+
+            if (compressed_data.size() < 1 + 8 + 1 + RansStaticCoder::ALPHABET * 2) {
+                throw std::runtime_error("Invalid rANS compressed file: too small");
+            }
+
+            size_t off = 1;
+            // Read original_size (8 bytes)
+            uint64_t original_size = 0;
+            for (int i = 0; i < 8; i++)
+                original_size |= static_cast<uint64_t>(compressed_data[off++]) << (i * 8);
+
+            std::cout << "Model type: rANS Order-0 (static)" << std::endl;
+            std::cout << "Original size: " << original_size << " bytes" << std::endl;
+
+            // Read scale_bits (1 byte)
+            uint8_t scale_bits = compressed_data[off++];
+            if (scale_bits != RansStaticCoder::SCALE_BITS) {
+                throw std::runtime_error("rANS: unsupported scale_bits value");
+            }
+
+            // Read scaled frequencies (257 × 2 bytes, little-endian)
+            std::array<uint16_t, RansStaticCoder::ALPHABET> scaled_freq{};
+            for (int i = 0; i < RansStaticCoder::ALPHABET; i++) {
+                scaled_freq[i] = static_cast<uint16_t>(compressed_data[off]) |
+                                 (static_cast<uint16_t>(compressed_data[off + 1]) << 8);
+                off += 2;
+            }
+
+            // Build decode table and decode
+            RansStaticCoder rans;
+            rans.build_decode_table(scaled_freq);
+
+            std::vector<uint8_t> rans_stream(
+                compressed_data.begin() + off, compressed_data.end());
+
+            std::vector<uint8_t> output_data = rans.decode(rans_stream, original_size);
+
+            if (output_data.size() != original_size) {
+                std::cerr << "Warning: Decoded size (" << output_data.size()
+                          << ") doesn't match expected size (" << original_size << ")" << std::endl;
+            }
+
+            std::cout << "Writing decompressed file: " << output_filename << std::endl;
+            FileIO::write_file(output_filename, output_data);
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+            std::cout << "\n=== Decompression Statistics ===" << std::endl;
+            std::cout << "Compressed size:    " << compressed_data.size() << " bytes" << std::endl;
+            std::cout << "Decompressed size:  " << output_data.size() << " bytes" << std::endl;
+            std::cout << "Decompression time: " << duration.count() << " ms" << std::endl;
+
+            return 0;
+        }
 
         // Handle parallel format before the standard single-stream header parser
         if (!compressed_data.empty() &&

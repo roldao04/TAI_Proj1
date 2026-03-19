@@ -430,6 +430,83 @@ int main(int argc, char* argv[]) {
 
             output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
 
+        } else if (model_type == ModelType::ORDER_1 && !use_bwt) {
+            // PARALLEL ORDER-1 (no BWT): split into independent blocks, encode in parallel.
+            // Each block gets a fresh Order-1 model; decompressor uses existing parallel path.
+            // 512 KB blocks: E → 2 threads, F → 4 threads → ~2–4× faster decompression.
+            const size_t MAX_BLOCK_NOBWT = 512 * 1024;
+            size_t num_blocks = std::max<size_t>(1,
+                (input_data.size() + MAX_BLOCK_NOBWT - 1) / MAX_BLOCK_NOBWT);
+            const size_t BLOCK_SIZE = (input_data.size() + num_blocks - 1) / num_blocks;
+
+            std::cout << "Using parallel Order-1 (" << num_blocks << " blocks, no BWT)..." << std::endl;
+
+            std::vector<StreamHeader::ParallelBlockMeta> block_metas(num_blocks);
+            std::vector<std::vector<uint8_t>> block_compressed(num_blocks);
+
+            auto encode_one_block = [&](size_t bi) {
+                size_t blk_start = bi * BLOCK_SIZE;
+                size_t blk_end   = std::min(blk_start + BLOCK_SIZE, input_data.size());
+                std::vector<uint8_t> block(input_data.begin() + blk_start,
+                                           input_data.begin() + blk_end);
+
+                ContextModel ctx_model;
+                ctx_model.set_encoding_method_ppm_c();
+                ctx_model.init_adaptive();
+                RangeEncoder range_enc;
+
+                for (uint8_t b : block) {
+                    auto res = ctx_model.encode_symbol_fast(b);
+                    for (int si = 0; si < res.count; si++) {
+                        range_enc.encode_symbol(res.steps[si].cum_freq_low,
+                                                res.steps[si].cum_freq_high,
+                                                res.steps[si].total_freq);
+                    }
+                    ctx_model.update_frequencies(b);
+                    ctx_model.update_history(b);
+                }
+                range_enc.finish();
+
+                StreamHeader::ParallelBlockMeta meta;
+                meta.bwt_primary_index      = 0;
+                meta.transform_flags        = 0;  // no BWT/MTF/ZRLE
+                meta.original_block_size    = static_cast<uint32_t>(block.size());
+                meta.preprocessed_block_size = static_cast<uint32_t>(block.size());
+                meta.compressed_block_size  = static_cast<uint32_t>(range_enc.get_output().size());
+
+                block_metas[bi]      = meta;
+                block_compressed[bi] = range_enc.get_output();
+            };
+
+            std::vector<std::thread> threads;
+            threads.reserve(num_blocks);
+            for (size_t i = 0; i < num_blocks; i++) {
+                threads.emplace_back(encode_one_block, i);
+            }
+            for (auto& t : threads) t.join();
+
+            std::vector<uint8_t> output_data;
+            StreamHeader::write_parallel_header(output_data, original_size, block_metas);
+            for (const auto& bc : block_compressed) {
+                output_data.insert(output_data.end(), bc.begin(), bc.end());
+            }
+
+            std::cout << "Writing compressed file: " << output_filename << std::endl;
+            FileIO::write_file(output_filename, output_data);
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+            std::cout << "\n=== Compression Statistics ===" << std::endl;
+            std::cout << "Model: Parallel Order-1 (" << num_blocks << " blocks)" << std::endl;
+            std::cout << "Original size:    " << input_data.size() << " bytes" << std::endl;
+            std::cout << "Compressed size:  " << output_data.size() << " bytes" << std::endl;
+            std::cout << "Compression ratio: " << (100.0 * output_data.size() / input_data.size()) << "%" << std::endl;
+            std::cout << "Bits per symbol:  " << (8.0 * output_data.size() / input_data.size()) << std::endl;
+            std::cout << "Compression time: " << duration.count() << " ms" << std::endl;
+
+            return 0;
+
         } else if (model_type == ModelType::ORDER_1 ||
                    model_type == ModelType::ORDER_2 ||
                    model_type == ModelType::ORDER_1_BWT ||

@@ -1,69 +1,68 @@
 #include "transform/zero_rle.h"
 
-#include <algorithm>
-#include <stdexcept>
-
+/*
+ * RLE0 encode:
+ *   - Zero runs → RUNA/RUNB sequence (bijective base-2)
+ *   - Non-zero byte b → byte b+1  (shifts ranks 1-254 to bytes 2-255)
+ *
+ * MTF rank 255 maps to byte 256 which does not fit; it cannot occur in practice
+ * after BWT+MTF (would require 256 unique bytes without any repeat in context).
+ */
 std::vector<uint8_t> ZeroRunLengthEncoder::encode(const std::vector<uint8_t>& input,
-                                                  size_t min_run_length) {
+                                                   size_t /* unused */) {
     std::vector<uint8_t> output;
     output.reserve(input.size());
 
-    size_t idx = 0;
-    while (idx < input.size()) {
-        if (input[idx] == 0) {
-            size_t run_length = 1;
-            while (idx + run_length < input.size() && input[idx + run_length] == 0) {
-                run_length++;
+    size_t i = 0;
+    while (i < input.size()) {
+        if (input[i] == 0) {
+            // Count zero run
+            size_t run = 0;
+            while (i < input.size() && input[i] == 0) { run++; i++; }
+
+            // Encode run length in bijective base-2, LSB first
+            // RUNA represents 1 at position k, RUNB represents 2 at position k
+            size_t n = run;
+            while (n > 0) {
+                if (n & 1) { output.push_back(RUNA); n = (n - 1) >> 1; }
+                else       { output.push_back(RUNB); n = (n - 2) >> 1; }
             }
-
-            if (run_length >= min_run_length) {
-                size_t remaining = run_length;
-                while (remaining > 0) {
-                    size_t chunk = std::min<size_t>(remaining, 255);
-                    output.push_back(MARKER);
-                    output.push_back(static_cast<uint8_t>(chunk));
-                    remaining -= chunk;
-                }
-            } else {
-                output.insert(output.end(), run_length, 0);
-            }
-
-            idx += run_length;
-            continue;
-        }
-
-        if (input[idx] == MARKER) {
-            output.push_back(MARKER);
-            output.push_back(0);
         } else {
-            output.push_back(input[idx]);
+            // Shift non-zero rank up by 1: rank 1→2, rank 254→255
+            output.push_back(static_cast<uint8_t>(input[i] + 1));
+            i++;
         }
-        idx++;
     }
 
     return output;
 }
 
+/*
+ * RLE0 decode:
+ *   - Read leading RUNA/RUNB symbols → decode run length, emit zeros
+ *   - Read next non-zero byte b → emit byte b-1 (reverse shift)
+ */
 std::vector<uint8_t> ZeroRunLengthEncoder::decode(const std::vector<uint8_t>& input) {
     std::vector<uint8_t> output;
     output.reserve(input.size());
 
-    for (size_t idx = 0; idx < input.size(); idx++) {
-        uint8_t byte = input[idx];
-        if (byte != MARKER) {
-            output.push_back(byte);
-            continue;
+    size_t i = 0;
+    while (i < input.size()) {
+        // Accumulate RUNA/RUNB run
+        uint32_t n = 0, base = 1;
+        while (i < input.size() && (input[i] == RUNA || input[i] == RUNB)) {
+            if (input[i] == RUNA) n += base;
+            else                   n += base * 2;
+            base <<= 1;
+            i++;
         }
+        // Emit n zeros
+        output.insert(output.end(), n, 0);
 
-        if (idx + 1 >= input.size()) {
-            throw std::runtime_error("Invalid zero-run stream: missing marker payload");
-        }
-
-        uint8_t payload = input[++idx];
-        if (payload == 0) {
-            output.push_back(MARKER);
-        } else {
-            output.insert(output.end(), payload, 0);
+        // Emit shifted non-zero value (if present)
+        if (i < input.size()) {
+            output.push_back(static_cast<uint8_t>(input[i] - 1));
+            i++;
         }
     }
 

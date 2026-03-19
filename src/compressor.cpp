@@ -224,7 +224,7 @@ int main(int argc, char* argv[]) {
             if (use_mtf && model_type == ModelType::ORDER_1) {
                 std::cout << "Using parallel per-block pipeline (BWT+MTF+ZRLE+Order-1 per block)..." << std::endl;
 
-                const size_t BLOCK_SIZE = 600 * 1024;
+                const size_t BLOCK_SIZE = 1024 * 1024;
                 size_t num_blocks = (input_data.size() + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
                 std::vector<StreamHeader::ParallelBlockMeta> block_metas(num_blocks);
@@ -306,7 +306,7 @@ int main(int argc, char* argv[]) {
             std::cout << "Applying BWT preprocessing..." << std::endl;
             auto start_bwt = std::chrono::high_resolution_clock::now();
 
-            auto [bwt_output, primary_indices] = BWT::transform_blocks(input_data, 600*1024);
+            auto [bwt_output, primary_indices] = BWT::transform_blocks(input_data, 1024*1024);
             data_to_encode = std::move(bwt_output);
             bwt_primary_indices = primary_indices;
             StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_BWT);
@@ -319,7 +319,7 @@ int main(int argc, char* argv[]) {
             if (use_mtf) {
                 std::cout << "Applying Move-to-Front transform..." << std::endl;
                 auto start_mtf = std::chrono::high_resolution_clock::now();
-                data_to_encode = MoveToFront::transform_blocks(data_to_encode, 600*1024);
+                data_to_encode = MoveToFront::transform_blocks(data_to_encode, 1024*1024);
                 auto end_mtf = std::chrono::high_resolution_clock::now();
                 auto mtf_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_mtf - start_mtf).count();
                 std::cout << "Move-to-Front transform complete (" << mtf_time << " ms)" << std::endl;

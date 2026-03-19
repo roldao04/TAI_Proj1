@@ -50,6 +50,10 @@ public:
     static const int EXTENDED_ALPHABET = 258;  // bytes + escape + EOF
     static const int MAX_ORDER       = 2;      // kept for interface compat
 
+    // Rescaling threshold: when an Order-1 context total exceeds this,
+    // halve all counts to keep the model adaptive to recent statistics.
+    static const uint32_t RESCALE_THRESH = 8192;
+
 private:
     enum class EncodingMethod { SIMPLE, METHOD_C };
     EncodingMethod encoding_method_;
@@ -74,6 +78,7 @@ private:
     std::vector<EncodingStep> encode_symbol_with_exclusions(uint8_t byte);
 
     uint32_t cumulative_before(const uint32_t* freq, int symbol) const;
+    void rescale_context(uint8_t ctx);  // halve all counts in one Order-1 context
 
 public:
     ContextModel();

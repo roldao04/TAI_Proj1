@@ -130,6 +130,31 @@ void ContextModel::update_frequencies(uint8_t byte) {
             total1_[ctx]++;
         }
     }
+
+    // Rescale this context when total gets too large to stay adaptive
+    if (total1_[ctx] > RESCALE_THRESH) {
+        rescale_context(ctx);
+    }
+}
+
+// ============================================================================
+// rescale_context — halve all Order-1 counts when total exceeds RESCALE_THRESH
+// ============================================================================
+
+void ContextModel::rescale_context(uint8_t ctx) {
+    total1_[ctx]     = 0;
+    singleton1_[ctx] = 0;
+
+    for (int s = 0; s < 256; s++) {
+        if (freq1_[ctx][s] > 0) {
+            freq1_[ctx][s] = (freq1_[ctx][s] + 1) >> 1;  // halve, round up (keeps ≥ 1)
+            if (freq1_[ctx][s] == 1) singleton1_[ctx]++;
+            total1_[ctx] += freq1_[ctx][s];
+        }
+    }
+    // Recompute escape using PPMD singleton estimator
+    freq1_[ctx][256] = std::max(1u, singleton1_[ctx]);
+    total1_[ctx]    += freq1_[ctx][256];
 }
 
 // ============================================================================

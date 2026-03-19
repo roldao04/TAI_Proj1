@@ -318,14 +318,14 @@ int main(int argc, char* argv[]) {
             }
 
             std::cout << "Reversing Move-to-Front transform..." << std::endl;
-            output_data = MoveToFront::inverse_transform_blocks(output_data, 600*1024);
+            output_data = MoveToFront::inverse_transform_blocks(output_data, 1024*1024);
         }
 
         if (header.uses_bwt()) {
             std::cout << "Applying inverse BWT..." << std::endl;
             auto start_inv_bwt = std::chrono::high_resolution_clock::now();
 
-            output_data = BWT::inverse_transform_blocks(output_data, header.bwt_primary_indices, 600*1024);
+            output_data = BWT::inverse_transform_blocks(output_data, header.bwt_primary_indices, 1024*1024);
 
             auto end_inv_bwt = std::chrono::high_resolution_clock::now();
             auto inv_bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_inv_bwt - start_inv_bwt).count();

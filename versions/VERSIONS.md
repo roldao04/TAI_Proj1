@@ -10,7 +10,8 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v6.0** | 2026-03-19 | PPM Method C + RLE0 + entropy threshold 6.8→7.2 | 55.16% avg ratio | **Current** |
+| **v7.0** | 2026-03-19 | PPMD singleton escape + frequency rescaling + 900KB blocks | 54.85% avg ratio | **Current** |
+| **v6.0** | 2026-03-19 | PPM Method C + RLE0 + entropy threshold 6.8→7.2 | 55.16% avg ratio | Superseded |
 | **v5.0** | 2026-03-19 | Full pipeline parallelism + encode_symbol_fast + rANS Order-0 | 56.39% avg ratio | Superseded |
 | **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
 | **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | Superseded |
@@ -21,7 +22,28 @@ Group 07 - Universidade de Aveiro
 
 ## Version Details
 
-### v6.0 (March 2026) - Current Release
+### v7.0 (March 2026) - Current Release
+
+**Major Updates:**
+- **PPMD singleton escape**: Replaces the `max(1, seen/4)` escape frequency estimator with `max(1, singleton_count)`, where `singleton_count` tracks per-context symbols with `freq == 1`; escape probability now reflects actual new-symbol likelihood rather than unique-symbol count; maintained via `singleton1_[256]` array with O(1) updates at freq 0→1 (singleton++) and 1→2 (singleton--) transitions
+- **Frequency rescaling at threshold 8192**: When `total1_[ctx] > 8192`, all per-context counts are halved (rounding up: `(f+1)>>1`), singletons recomputed, escape updated; prevents early-block statistics from dominating; particularly effective on locally non-stationary files (genomic, structured binary)
+- **900 KB block size**: Reverts block size from 600 KB back to 900 KB; larger BWT context clusters similar bytes more effectively; fewer model restarts per file (A: 3→2 blocks, C: 4→3, G: 5→3, H: 2→2 but 50% larger first block); speed cost from fewer parallel threads is acceptable given the ratio gains
+
+**Performance:**
+- Average compression ratio: **54.85%** (improved from v6.0's 55.16%, −0.31pp)
+- **Beats bzip2 on total compressed size** (54.85% vs 54.88%), 4/7 files won: A, D, E, H
+- File H: 44.66% → **43.56%** (−1.10pp); File C: 27.59% → **26.95%** (−0.64pp); File E: 86.18% → **85.60%** (−0.58pp)
+
+**Failed optimizations tried:**
+- Update exclusion (from v6.0): re-confirmed not useful with rescaling either; regression confirmed
+- Rescaling threshold variations: tested 16384 (55.01%) and 32768 (55.02%); 8192 is optimal — higher thresholds rescale too infrequently to affect dominant contexts within a 900 KB block
+- Exempting context 0 (RUNA) from rescaling: skipping the most-used context worsened results; per-context rescaling already handles context 0 correctly since it accumulates faster and gets rescaled more often
+
+**Detailed Documentation:** See [v7.0 README](g07_v7.0/README.md)
+
+---
+
+### v6.0 (March 2026) - Superseded by v7.0
 
 **Major Updates:**
 - **PPM Method C exclusions**: When escaping from Order-1 to Order-0, exclude symbols already seen in the current Order-1 context from the Order-0 distribution; both encoder and decoder compute the same exclusion set dynamically
@@ -42,7 +64,7 @@ Group 07 - Universidade de Aveiro
 
 ---
 
-### v5.0 (March 2026) - Superseded by v6.0
+### v5.0 (March 2026) - Superseded
 
 **Major Updates:**
 - **Full Pipeline Parallelism**: Each 600 KB block runs its complete BWT → MTF → ZRLE → Order-1 pipeline in its own `std::thread` simultaneously (pbzip2 design)
@@ -221,20 +243,22 @@ Group 07 - Universidade de Aveiro
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v6.0 |
-|--------|------|------|------|------|------|------|
-| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 56.39% | **55.16%** |
-| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.51 | **4.41** |
-| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (600KB) | BWT (600KB) |
-| **Zero-run encoding** | None | None | None | ZRLE | ZRLE | **RLE0** |
-| **PPM variant** | — | Simple | Simple | Simple | Simple | **Method C** |
-| **Entropy Coder** | Arithmetic | Range | Range | Range | Range + rANS | Range + **rANS** |
-| **Order-1 threshold** | — | 6.5 | 6.5 | 6.8 | 6.8 | **7.2** |
-| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | 3/8 | **3/7** |
-| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | +1.7–4.6× vs v4.0 | Same as v5.0 |
-| **Decompress Speed** | Baseline | ~2× | Competitive | Baseline | −25% Order-1, −82% Order-0 | Same as v5.0 |
-| **Threading** | None | None | None | Parallel BWT | Full parallel pipeline | Same as v5.0 |
-| **Beats bzip2 (total)** | No | No | No | No | No | **Yes** |
+| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v6.0 | v7.0 |
+|--------|------|------|------|------|------|------|------|
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 56.39% | 55.16% | **54.85%** |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.51 | 4.41 | **4.39** |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (600KB) | BWT (600KB) | **BWT (900KB)** |
+| **Zero-run encoding** | None | None | None | ZRLE | ZRLE | RLE0 | RLE0 |
+| **PPM variant** | — | Simple | Simple | Simple | Simple | Method C | **Method C + PPMD** |
+| **Escape estimator** | — | — | — | seen/4 | seen/4 | seen/4 | **singleton count** |
+| **Frequency rescaling** | No | No | No | No | No | No | **Yes (thresh 8192)** |
+| **Entropy Coder** | Arithmetic | Range | Range | Range | Range + rANS | Range + rANS | Range + rANS |
+| **Order-1 threshold** | — | 6.5 | 6.5 | 6.8 | 6.8 | 7.2 | 7.2 |
+| **Files Won** | 1/8 | 2/8 | 3/8 | 3/8 | 3/8 | 3/7 | **4/7** |
+| **Compress Speed** | Baseline | ~2× | Competitive | 27–69× vs v3 | +1.7–4.6× vs v4.0 | Same as v5.0 | Slightly slower (900KB) |
+| **Decompress Speed** | Baseline | ~2× | Competitive | Baseline | −25% Order-1, −82% Order-0 | Same as v5.0 | Same as v6.0 |
+| **Threading** | None | None | None | Parallel BWT | Full parallel pipeline | Same as v5.0 | Same as v5.0 |
+| **Beats bzip2 (total)** | No | No | No | No | No | Yes | **Yes (−0.03pp)** |
 
 ---
 
@@ -279,7 +303,14 @@ Group 07 - Universidade de Aveiro
   - Tested and reverted: update exclusion (regression with Method C)
   - Entropy threshold 6.8 → 7.2 (routes E, F to Order-1)
 - **2026-03-19**: v6.0 released (PPM Method C + RLE0 + threshold; beats bzip2 on total compressed size)
+- **2026-03-19**: v7.0 development
+  - PPMD singleton escape (singleton1_[256] array, O(1) updates at freq 0→1 and 1→2)
+  - Frequency rescaling at threshold 8192 (halve round-up, recount singletons)
+  - Tested and reverted: rescaling threshold 16384/32768 (too infrequent)
+  - Tested and reverted: exempting context 0 from rescaling (worsened results)
+  - Block size 600 KB → 900 KB (better BWT context, fewer blocks, lower entropy MTF)
+- **2026-03-19**: v7.0 released (PPMD escape + rescaling + 900KB blocks; 54.85% avg, 4/7 files beat bzip2)
 
 ---
 
-*Last updated: 2026-03-19 (v6.0)*
+*Last updated: 2026-03-19 (v7.0)*

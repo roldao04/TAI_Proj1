@@ -16,6 +16,24 @@ TEMP_DIR="benchmarks/tmp"
 
 mkdir -p "$TEMP_DIR"
 
+# Auto-detect available G07 versions
+echo "Detecting G07 versions..."
+G07_VERSIONS=()
+for bin in bin/g07-v*-c; do
+    if [ -f "$bin" ]; then
+        version=$(basename "$bin" | sed 's/g07-v\(.*\)-c/\1/')
+        G07_VERSIONS+=("$version")
+        echo "  Found: g07-v${version}"
+    fi
+done
+
+if [ ${#G07_VERSIONS[@]} -eq 0 ]; then
+    echo "ERROR: No G07 binaries found in bin/"
+    echo "Please run 'make' to build the compressor first."
+    exit 1
+fi
+echo
+
 # Timeout configuration (seconds)
 COMPRESS_TIMEOUT=60    # Maximum time for compression
 DECOMPRESS_TIMEOUT=30  # Maximum time for decompression
@@ -101,11 +119,13 @@ benchmark() {
     rm -f "$compressed_file" "$decompressed_file"
 }
 
-# Our compressor
-benchmark "G07 Compressor" \
-    "./bin/compress '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.g07' --yes" \
-    "./bin/decompress '$TEMP_DIR/${BASENAME}.g07' '$TEMP_DIR/${BASENAME}.decompressed'" \
-    "$TEMP_DIR/${BASENAME}.g07"
+# Benchmark all detected G07 versions
+for version in "${G07_VERSIONS[@]}"; do
+    benchmark "G07 v${version}" \
+        "./bin/g07-v${version}-c '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.g07-v${version}'" \
+        "./bin/g07-v${version}-d '$TEMP_DIR/${BASENAME}.g07-v${version}' '$TEMP_DIR/${BASENAME}.decompressed'" \
+        "$TEMP_DIR/${BASENAME}.g07-v${version}"
+done
 
 # gzip
 benchmark "gzip" \

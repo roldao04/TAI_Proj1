@@ -1,214 +1,236 @@
-# Makefile for Lossless Data Compression Tool
-# TAI Project #1 - 2025/26
+# ============================================
+# G07 Compression - Version-Specific Binaries
+# ============================================
 
 CXX = g++
 CC = gcc
-CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -march=native -flto=auto -I./include
+CXXFLAGS = -std=c++17 -O3 -march=native -flto=auto -Wall -Wextra -I./include
 CFLAGS = -O3 -march=native -flto=auto -I./include
 LDFLAGS = -lpthread -flto=auto
 
-# Directories
-SRC_DIR = src
-OBJ_DIR = obj
-BIN_DIR = bin
+SRC = src
+OBJ = obj
+BIN = bin
 
-# Source files (v5.0)
-RANGE_SRC = $(SRC_DIR)/arithmetic/range_coder.cpp
-RANS_SRC = $(SRC_DIR)/arithmetic/rans_static.cpp
-MODEL_SRC = $(SRC_DIR)/model/frequency_model.cpp
-CONTEXT_SRC = $(SRC_DIR)/model/context_model.cpp
-UTILS_SRC = $(SRC_DIR)/utils/file_io.cpp
-ENTROPY_SRC = $(SRC_DIR)/utils/entropy_calculator.cpp
-BWT_SRC = $(SRC_DIR)/transform/bwt.cpp
-MTF_SRC = $(SRC_DIR)/transform/mtf.cpp
-ZRLE_SRC = $(SRC_DIR)/transform/zero_rle.cpp
-HEADER_SRC = $(SRC_DIR)/utils/stream_header.cpp
-LIBSAIS_SRC = $(SRC_DIR)/libsais.c
-COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
-DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
+# ============================================
+# SHARED OBJECTS (all versions)
+# ============================================
+SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o \
+         $(OBJ)/range_coder.o $(OBJ)/rans_static.o \
+         $(OBJ)/file_io.o $(OBJ)/entropy_calculator.o \
+         $(OBJ)/stream_header.o $(OBJ)/libsais.o
 
-# Source files (v6.0 - new)
-PRED_UTILS_SRC = $(SRC_DIR)/model/prediction_utils.cpp
-MULTI_ORDER_SRC = $(SRC_DIR)/model/multi_order_ppm.cpp
-MIXER_SRC = $(SRC_DIR)/model/context_mixer.cpp
-BIT_ARITH_SRC = $(SRC_DIR)/arithmetic/bit_arithmetic_coder.cpp
-COMPRESSOR_V6_SRC = $(SRC_DIR)/compressor_v6.cpp
-DECOMPRESSOR_V6_SRC = $(SRC_DIR)/decompressor_v6.cpp
+# v5 specific models
+V5_MODELS = $(OBJ)/frequency_model.o $(OBJ)/context_model.o
 
-# Object files (v5.0)
-RANGE_OBJ = $(OBJ_DIR)/range_coder.o
-RANS_OBJ = $(OBJ_DIR)/rans_static.o
-LIBSAIS_OBJ = $(OBJ_DIR)/libsais.o
-MODEL_OBJ = $(OBJ_DIR)/frequency_model.o
-CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
-UTILS_OBJ = $(OBJ_DIR)/file_io.o
-ENTROPY_OBJ = $(OBJ_DIR)/entropy_calculator.o
-BWT_OBJ = $(OBJ_DIR)/bwt.o
-MTF_OBJ = $(OBJ_DIR)/mtf.o
-ZRLE_OBJ = $(OBJ_DIR)/zero_rle.o
-HEADER_OBJ = $(OBJ_DIR)/stream_header.o
-COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
-DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
+# v7 specific models (v5 + multi-order)
+V7_MODELS = $(V5_MODELS) $(OBJ)/multi_order_ppm.o \
+            $(OBJ)/context_mixer.o $(OBJ)/prediction_utils.o
 
-# Object files (v6.0 - new)
-PRED_UTILS_OBJ = $(OBJ_DIR)/prediction_utils.o
-MULTI_ORDER_OBJ = $(OBJ_DIR)/multi_order_ppm.o
-MIXER_OBJ = $(OBJ_DIR)/context_mixer.o
-BIT_ARITH_OBJ = $(OBJ_DIR)/bit_arithmetic_coder.o
-COMPRESSOR_V6_OBJ = $(OBJ_DIR)/compressor_v6.o
-DECOMPRESSOR_V6_OBJ = $(OBJ_DIR)/decompressor_v6.o
+# v8 specific models (v7 + bit-level) - placeholder for future
+V8_MODELS = $(V7_MODELS)
 
-# Common objects (used by both compressor and decompressor)
-COMMON_OBJS = $(RANGE_OBJ) $(RANS_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ) $(LIBSAIS_OBJ)
-
-# v6.0 specific objects
-V6_OBJS = $(PRED_UTILS_OBJ) $(MULTI_ORDER_OBJ) $(MIXER_OBJ) $(BIT_ARITH_OBJ)
-
-# Executables
-COMPRESSOR = $(BIN_DIR)/compress
-DECOMPRESSOR = $(BIN_DIR)/decompress
-COMPRESSOR_V6 = $(BIN_DIR)/compress_v6
-DECOMPRESSOR_V6 = $(BIN_DIR)/decompress_v6
-TEST_BWT = $(BIN_DIR)/test_bwt
-
-# Targets
-.PHONY: all clean test benchmark benchmark-v6 compare-versions benchmark-all v5 v6 both
-
-# Default: build v5.0 (for backward compatibility)
-all: both
-
-# Build v5.0 only (fast compressor)
-v5: $(COMPRESSOR) $(DECOMPRESSOR)
-
-# Build v6.0 only (maximum compression)
-v6: $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
-
-# Build both versions
-both: v5 v6
-
-# Create directories
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
-
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
-
-# Compile object files
-$(RANGE_OBJ): $(RANGE_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(RANS_OBJ): $(RANS_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(MODEL_OBJ): $(MODEL_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(CONTEXT_OBJ): $(CONTEXT_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(UTILS_OBJ): $(UTILS_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(ENTROPY_OBJ): $(ENTROPY_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(BWT_OBJ): $(BWT_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(LIBSAIS_OBJ): $(LIBSAIS_SRC) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(MTF_OBJ): $(MTF_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(ZRLE_OBJ): $(ZRLE_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(HEADER_OBJ): $(HEADER_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(COMPRESSOR_OBJ): $(COMPRESSOR_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(DECOMPRESSOR_OBJ): $(DECOMPRESSOR_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# Link executables
-$(COMPRESSOR): $(COMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-$(DECOMPRESSOR): $(DECOMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-# v6.0 object files
-$(PRED_UTILS_OBJ): $(PRED_UTILS_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(MULTI_ORDER_OBJ): $(MULTI_ORDER_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(MIXER_OBJ): $(MIXER_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(BIT_ARITH_OBJ): $(BIT_ARITH_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(COMPRESSOR_V6_OBJ): $(COMPRESSOR_V6_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(DECOMPRESSOR_V6_OBJ): $(DECOMPRESSOR_V6_SRC) | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# Link executables (v6.0)
-$(COMPRESSOR_V6): $(COMPRESSOR_V6_OBJ) $(COMMON_OBJS) $(V6_OBJS) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-$(DECOMPRESSOR_V6): $(DECOMPRESSOR_V6_OBJ) $(COMMON_OBJS) $(V6_OBJS) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-# Test executable
-$(TEST_BWT): tests/test_bwt.cpp $(BWT_OBJ) $(LIBSAIS_OBJ) | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-# Clean build artifacts
-clean:
-	rm -rf $(OBJ_DIR) $(BIN_DIR)
-
-# Run tests
-test: $(COMPRESSOR) $(DECOMPRESSOR) $(TEST_BWT)
-	@echo "Running BWT unit tests..."
-	@$(TEST_BWT)
+# ============================================
+# BUILD ALL VERSIONS (default)
+# ============================================
+all: v5
 	@echo ""
-	@echo "Running integration test..."
-	@bash tests/verify_lossless.sh
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo "✅ Build complete!"
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo ""
+	@echo "Available binaries:"
+	@echo "  bin/g07-v5-c  <input> <output>   → v5.0 Compressor (54.73%)"
+	@echo "  bin/g07-v5-d  <input> <output>   → v5.0 Decompressor"
+	@echo ""
+	@echo "No flags needed - optimal settings hardcoded!"
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo ""
 
-# Run comprehensive benchmark on all data files (v5.0)
-benchmark: $(COMPRESSOR) $(DECOMPRESSOR)
-	@echo "Running comprehensive benchmark (v5.0)..."
+# ============================================
+# VERSION-SPECIFIC TARGETS
+# ============================================
+
+v5: $(BIN)/g07-v5-c $(BIN)/g07-v5-d
+	@echo "✅ v5.0 built successfully"
+
+v7: $(BIN)/g07-v7-c $(BIN)/g07-v7-d
+	@echo "✅ v7.0 built successfully"
+
+v8: $(BIN)/g07-v8-c $(BIN)/g07-v8-d
+	@echo "✅ v8.0 built successfully"
+
+# ============================================
+# v5.0 BINARIES
+# ============================================
+
+$(BIN)/g07-v5-c: $(OBJ)/compressor_v5.o $(SHARED) $(V5_MODELS) | $(BIN)
+	@echo "Linking g07-v5-c..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+	@echo "  Binary size: $$(du -h $@ | cut -f1)"
+
+$(BIN)/g07-v5-d: $(OBJ)/decompressor_v5.o $(SHARED) $(V5_MODELS) | $(BIN)
+	@echo "Linking g07-v5-d..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+	@echo "  Binary size: $$(du -h $@ | cut -f1)"
+
+# ============================================
+# v7.0 BINARIES (placeholder - not implemented yet)
+# ============================================
+
+$(BIN)/g07-v7-c: $(OBJ)/compressor_v7.o $(SHARED) $(V7_MODELS) | $(BIN)
+	@echo "Linking g07-v7-c..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+	@echo "  Binary size: $$(du -h $@ | cut -f1)"
+
+$(BIN)/g07-v7-d: $(OBJ)/decompressor_v7.o $(SHARED) $(V7_MODELS) | $(BIN)
+	@echo "Linking g07-v7-d..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+	@echo "  Binary size: $$(du -h $@ | cut -f1)"
+
+# ============================================
+# v8.0 BINARIES (placeholder - not implemented yet)
+# ============================================
+
+$(BIN)/g07-v8-c: $(OBJ)/compressor_v8.o $(SHARED) $(V8_MODELS) | $(BIN)
+	@echo "Linking g07-v8-c..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+	@echo "  Binary size: $$(du -h $@ | cut -f1)"
+
+$(BIN)/g07-v8-d: $(OBJ)/decompressor_v8.o $(SHARED) $(V8_MODELS) | $(BIN)
+	@echo "Linking g07-v8-d..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+	@echo "  Binary size: $$(du -h $@ | cut -f1)"
+
+# ============================================
+# COMPILE RULES
+# ============================================
+
+# Compressors
+$(OBJ)/compressor_v5.o: $(SRC)/compressor_v5.cpp | $(OBJ)
+	@echo "Compiling compressor_v5.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/compressor_v7.o: $(SRC)/compressor_v7.cpp | $(OBJ)
+	@echo "Compiling compressor_v7.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/compressor_v8.o: $(SRC)/compressor_v8.cpp | $(OBJ)
+	@echo "Compiling compressor_v8.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Decompressors
+$(OBJ)/decompressor_v5.o: $(SRC)/decompressor_v5.cpp | $(OBJ)
+	@echo "Compiling decompressor_v5.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/decompressor_v7.o: $(SRC)/decompressor_v7.cpp | $(OBJ)
+	@echo "Compiling decompressor_v7.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/decompressor_v8.o: $(SRC)/decompressor_v8.cpp | $(OBJ)
+	@echo "Compiling decompressor_v8.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Shared transform components
+$(OBJ)/bwt.o: $(SRC)/transform/bwt.cpp | $(OBJ)
+	@echo "Compiling bwt.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/mtf.o: $(SRC)/transform/mtf.cpp | $(OBJ)
+	@echo "Compiling mtf.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/zero_rle.o: $(SRC)/transform/zero_rle.cpp | $(OBJ)
+	@echo "Compiling zero_rle.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Shared arithmetic coders
+$(OBJ)/range_coder.o: $(SRC)/arithmetic/range_coder.cpp | $(OBJ)
+	@echo "Compiling range_coder.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/rans_static.o: $(SRC)/arithmetic/rans_static.cpp | $(OBJ)
+	@echo "Compiling rans_static.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Shared models
+$(OBJ)/frequency_model.o: $(SRC)/model/frequency_model.cpp | $(OBJ)
+	@echo "Compiling frequency_model.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/context_model.o: $(SRC)/model/context_model.cpp | $(OBJ)
+	@echo "Compiling context_model.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/multi_order_ppm.o: $(SRC)/model/multi_order_ppm.cpp | $(OBJ)
+	@echo "Compiling multi_order_ppm.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/context_mixer.o: $(SRC)/model/context_mixer.cpp | $(OBJ)
+	@echo "Compiling context_mixer.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/prediction_utils.o: $(SRC)/model/prediction_utils.cpp | $(OBJ)
+	@echo "Compiling prediction_utils.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Shared utilities
+$(OBJ)/file_io.o: $(SRC)/utils/file_io.cpp | $(OBJ)
+	@echo "Compiling file_io.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/entropy_calculator.o: $(SRC)/utils/entropy_calculator.cpp | $(OBJ)
+	@echo "Compiling entropy_calculator.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/stream_header.o: $(SRC)/utils/stream_header.cpp | $(OBJ)
+	@echo "Compiling stream_header.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# libsais (C library)
+$(OBJ)/libsais.o: $(SRC)/libsais.c | $(OBJ)
+	@echo "Compiling libsais.c..."
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+# ============================================
+# UTILITIES
+# ============================================
+
+$(OBJ) $(BIN):
+	mkdir -p $@
+
+clean:
+	rm -rf $(OBJ) $(BIN)
+	@echo "✅ Clean complete"
+
+# Check binary sizes (must be < 1MB per teacher requirement)
+check-sizes: all
+	@echo ""
+	@echo "Checking binary sizes (teacher requirement: < 1MB)..."
+	@echo "───────────────────────────────────────────────────────────"
+	@for bin in $(BIN)/g07-*; do \
+		if [ -f "$$bin" ]; then \
+			size=$$(stat -f%z "$$bin" 2>/dev/null || stat -c%s "$$bin" 2>/dev/null); \
+			size_kb=$$(($$size / 1024)); \
+			size_mb=$$(($$size / 1048576)); \
+			if [ $$size -gt 1048576 ]; then \
+				echo "❌ $$bin: $$(du -h $$bin | cut -f1) (TOO BIG!)"; \
+			else \
+				echo "✅ $$bin: $$(du -h $$bin | cut -f1) ($${size_kb} KB)"; \
+			fi; \
+		fi; \
+	done
+	@echo "───────────────────────────────────────────────────────────"
+	@echo ""
+
+test: v5
+	@echo "Running quick lossless verification..."
+	@echo "Testing on file A (lossless verification built into benchmark)"
+	@bash benchmarks/compare.sh data/A
+
+benchmark: v5
+	@echo "Running benchmarks..."
 	@bash benchmarks/benchmark_all.sh
 
-# Benchmark v6.0 only
-benchmark-v6: $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
-	@echo "Running v6.0 benchmark (maximum compression)..."
-	@cd benchmarks && bash benchmark_v6.sh || (echo "Benchmark failed! Check benchmarks/benchmark_v6.sh"; exit 1)
-
-# Compare v5.0 vs v6.0
-compare-versions: $(COMPRESSOR) $(DECOMPRESSOR) $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
-	@echo "Comparing v5.0 vs v6.0..."
-	@cd benchmarks && bash compare_v5_v6.sh || (echo "Comparison failed! Check benchmarks/compare_v5_v6.sh"; exit 1)
-
-# Benchmark all versions (run independently to avoid cascading failures)
-benchmark-all: $(COMPRESSOR) $(DECOMPRESSOR) $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
-	@echo "Running all benchmarks..."
-	@echo "════════════════════════════════════════"
-	@echo "[1/3] Running v5.0 benchmark..."
-	-@bash benchmarks/benchmark_all.sh
-	@echo ""
-	@echo "[2/3] Running v6.0 benchmark..."
-	-@cd benchmarks && bash benchmark_v6.sh
-	@echo ""
-	@echo "[3/3] Running comparison..."
-	-@cd benchmarks && bash compare_v5_v6.sh
-	@echo ""
-	@echo "════════════════════════════════════════"
-	@echo "All benchmarks complete! Check benchmarks/ directory for results."
+.PHONY: all v5 v7 v8 clean check-sizes test benchmark

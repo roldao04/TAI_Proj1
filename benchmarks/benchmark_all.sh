@@ -27,6 +27,24 @@ NC='\033[0m' # No Color
 # Create temp directory
 mkdir -p "$TEMP_DIR"
 
+# Auto-detect available G07 versions
+echo "Detecting G07 versions..."
+G07_VERSIONS=()
+for bin in bin/g07-v*-c; do
+    if [ -f "$bin" ]; then
+        version=$(basename "$bin" | sed 's/g07-v\(.*\)-c/\1/')
+        G07_VERSIONS+=("$version")
+        echo "  Found: g07-v${version}"
+    fi
+done
+
+if [ ${#G07_VERSIONS[@]} -eq 0 ]; then
+    echo "ERROR: No G07 binaries found in bin/"
+    echo "Please run 'make' to build the compressor first."
+    exit 1
+fi
+echo
+
 # Initialize results files
 echo "File,Original Size (bytes),Tool,Compressed Size (bytes),Compression Ratio (%),Bits/Symbol,Compress Time (ms),Decompress Time (ms),Lossless" > "$RESULTS_CSV"
 
@@ -154,17 +172,19 @@ for file in "$DATA_DIR"/*; do
     # Clean previous temp results
     rm -f "$TEMP_DIR/${basename}."*.result
 
-    # Test our compressor
-    echo -n "  Testing G07... "
-    if benchmark_file_tool "$file" "$basename" "g07" \
-        "./bin/compress '$file' '$TEMP_DIR/${basename}.g07' --yes" \
-        "./bin/decompress '$TEMP_DIR/${basename}.g07' '$TEMP_DIR/${basename}.g07.decompressed'" \
-        "$TEMP_DIR/${basename}.g07" \
-        "$original_size"; then
-        echo -e "${GREEN}✓${NC}"
-    else
-        echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
-    fi
+    # Test all detected G07 versions
+    for version in "${G07_VERSIONS[@]}"; do
+        echo -n "  Testing g07-v${version}... "
+        if benchmark_file_tool "$file" "$basename" "g07-v${version}" \
+            "./bin/g07-v${version}-c '$file' '$TEMP_DIR/${basename}.g07-v${version}'" \
+            "./bin/g07-v${version}-d '$TEMP_DIR/${basename}.g07-v${version}' '$TEMP_DIR/${basename}.g07-v${version}.decompressed'" \
+            "$TEMP_DIR/${basename}.g07-v${version}" \
+            "$original_size"; then
+            echo -e "${GREEN}✓${NC}"
+        else
+            echo -e "${YELLOW}⏱️ TIMEOUT/ERROR${NC}"
+        fi
+    done
 
     # Test gzip
     echo -n "  Testing gzip... "
@@ -219,7 +239,17 @@ for file in "$DATA_DIR"/*; do
     echo
 
     # Collect results and write to CSV
-    for tool in g07 gzip bzip2 xz zstd; do
+    # First collect G07 versions
+    for version in "${G07_VERSIONS[@]}"; do
+        result_file="$TEMP_DIR/${basename}.g07-v${version}.result"
+        if [ -f "$result_file" ]; then
+            result=$(cat "$result_file")
+            echo "$basename,$original_size,g07-v${version},$result" >> "$RESULTS_CSV"
+        fi
+    done
+
+    # Then collect standard tools
+    for tool in gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             result=$(cat "$result_file")
@@ -233,8 +263,19 @@ echo "## Quick Summary" >> "$RESULTS_MD"
 echo >> "$RESULTS_MD"
 echo "### Compression Ratio Comparison" >> "$RESULTS_MD"
 echo >> "$RESULTS_MD"
-echo "| File | Size | G07 | gzip | bzip2 | xz | zstd | Winner |" >> "$RESULTS_MD"
-echo "|------|------|----------|------|-------|----|----|--------|" >> "$RESULTS_MD"
+
+# Build dynamic header with all G07 versions
+header="| File | Size |"
+separator="|------|------|"
+for version in "${G07_VERSIONS[@]}"; do
+    header="$header g07-v${version} |"
+    separator="$separator----------|"
+done
+header="$header gzip | bzip2 | xz | zstd | Winner |"
+separator="$separator------|-------|----|----|--------|"
+
+echo "$header" >> "$RESULTS_MD"
+echo "$separator" >> "$RESULTS_MD"
 
 # Process each file for quick summary
 for file in "$DATA_DIR"/*; do
@@ -248,25 +289,54 @@ for file in "$DATA_DIR"/*; do
 
     echo -n "| $basename | $size_display |" >> "$RESULTS_MD"
 
-    # Find best ratio for this file
+    # Find best ratio for this file (across all tools)
     best_ratio=999.99
     best_tool=""
 
-    for tool in g07 gzip bzip2 xz zstd; do
+    # First pass: find the winner
+    for version in "${G07_VERSIONS[@]}"; do
+        result_file="$TEMP_DIR/${basename}.g07-v${version}.result"
+        if [ -f "$result_file" ]; then
+            ratio=$(cat "$result_file" | cut -d',' -f2)
+            if (( $(echo "$ratio < $best_ratio" | bc -l) )); then
+                best_ratio=$ratio
+                best_tool="g07-v${version}"
+            fi
+        fi
+    done
+
+    for tool in gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             ratio=$(cat "$result_file" | cut -d',' -f2)
-
-            # Check if this tool wins
             if (( $(echo "$ratio < $best_ratio" | bc -l) )); then
                 best_ratio=$ratio
                 best_tool=$tool
             fi
+        fi
+    done
 
-            # Mark if our tool
-            if [ "$tool" = "g07" ] && [ "$best_tool" = "g07" ]; then
+    # Second pass: print G07 versions
+    for version in "${G07_VERSIONS[@]}"; do
+        result_file="$TEMP_DIR/${basename}.g07-v${version}.result"
+        if [ -f "$result_file" ]; then
+            ratio=$(cat "$result_file" | cut -d',' -f2)
+            if [ "g07-v${version}" = "$best_tool" ]; then
                 echo -n " **${ratio}%** ⭐ |" >> "$RESULTS_MD"
-            elif [ "$tool" = "$best_tool" ]; then
+            else
+                echo -n " ${ratio}% |" >> "$RESULTS_MD"
+            fi
+        else
+            echo -n " N/A |" >> "$RESULTS_MD"
+        fi
+    done
+
+    # Third pass: print standard tools
+    for tool in gzip bzip2 xz zstd; do
+        result_file="$TEMP_DIR/${basename}.${tool}.result"
+        if [ -f "$result_file" ]; then
+            ratio=$(cat "$result_file" | cut -d',' -f2)
+            if [ "$tool" = "$best_tool" ]; then
                 echo -n " **${ratio}%** ⭐ |" >> "$RESULTS_MD"
             else
                 echo -n " ${ratio}% |" >> "$RESULTS_MD"
@@ -308,7 +378,61 @@ for file in "$DATA_DIR"/*; do
     echo "| Tool | Compressed Size | Ratio | Bits/Symbol | Compress Time | Decompress Time | Space Saved | Lossless |" >> "$RESULTS_MD"
     echo "|------|-----------------|-------|-------------|---------------|-----------------|-------------|----------|" >> "$RESULTS_MD"
 
-    for tool in g07 gzip bzip2 xz zstd; do
+    # Process G07 versions first
+    for version in "${G07_VERSIONS[@]}"; do
+        tool="g07-v${version}"
+        result_file="$TEMP_DIR/${basename}.${tool}.result"
+        if [ -f "$result_file" ]; then
+            IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless <<< $(cat "$result_file")
+
+            # Handle timeout cases
+            if [ "$comp_size" = "TIMEOUT" ]; then
+                echo "| $tool | ⏱️ TIMEOUT (>${COMPRESS_TIMEOUT}s) | - | - | - | - | - | ⏱️ |" >> "$RESULTS_MD"
+                continue
+            elif [ "$comp_size" = "ERROR" ]; then
+                echo "| $tool | ❌ ERROR | - | - | - | - | - | ❌ |" >> "$RESULTS_MD"
+                continue
+            fi
+
+            comp_size_display=$(numfmt --to=iec-i --suffix=B $comp_size)
+            saved=$(( original_size - comp_size ))
+            saved_display=$(numfmt --to=iec-i --suffix=B $saved | sed 's/^-//')
+
+            if [ $saved -ge 0 ]; then
+                saved_str="✓ $saved_display saved"
+            else
+                saved_str="✗ $saved_display overhead"
+            fi
+
+            # Performance indicator
+            perf_indicator=""
+            if (( $(echo "$ratio < 50" | bc -l) )); then
+                perf_indicator="🟢"
+            elif (( $(echo "$ratio < 80" | bc -l) )); then
+                perf_indicator="🟡"
+            else
+                perf_indicator="🔴"
+            fi
+
+            lossless_mark="✓"
+            if [ "$lossless" = "TIMEOUT" ]; then
+                lossless_mark="⏱️"
+                decomp_time="TIMEOUT (>${DECOMPRESS_TIMEOUT}s)"
+            elif [ "$lossless" != "YES" ]; then
+                lossless_mark="✗"
+            fi
+
+            # Handle decompress timeout in time display
+            if [ "$decomp_time" = "ERROR" ]; then
+                decomp_time="ERROR"
+            fi
+
+            echo "| $tool | $comp_size_display ($comp_size) | $perf_indicator ${ratio}% | ${bits} | ${comp_time} ms | ${decomp_time} | $saved_str | $lossless_mark |" >> "$RESULTS_MD"
+        fi
+    done
+
+    # Then process standard tools
+    for tool in gzip bzip2 xz zstd; do
         result_file="$TEMP_DIR/${basename}.${tool}.result"
         if [ -f "$result_file" ]; then
             IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless <<< $(cat "$result_file")
@@ -376,7 +500,32 @@ echo "|------|-------------------|---------|" >> "$RESULTS_MD"
 
 # Calculate averages and rank (skip TIMEOUT and ERROR)
 declare -A avg_compress_time
-for tool in g07 gzip bzip2 xz zstd; do
+
+# Process G07 versions
+for version in "${G07_VERSIONS[@]}"; do
+    tool="g07-v${version}"
+    total_time=0
+    count=0
+    for file in "$DATA_DIR"/*; do
+        if [ ! -f "$file" ]; then continue; fi
+        basename=$(basename "$file")
+        result_file="$TEMP_DIR/${basename}.${tool}.result"
+        if [ -f "$result_file" ]; then
+            time=$(cat "$result_file" | cut -d',' -f4)
+            # Skip TIMEOUT and ERROR
+            if [ "$time" != "TIMEOUT" ] && [ "$time" != "ERROR" ]; then
+                total_time=$(( total_time + time ))
+                count=$(( count + 1 ))
+            fi
+        fi
+    done
+    if [ $count -gt 0 ]; then
+        avg_compress_time[$tool]=$(( total_time / count ))
+    fi
+done
+
+# Process standard tools
+for tool in gzip bzip2 xz zstd; do
     total_time=0
     count=0
     for file in "$DATA_DIR"/*; do
@@ -420,7 +569,32 @@ echo "|------|---------------------|---------|" >> "$RESULTS_MD"
 
 # Calculate averages and rank (skip TIMEOUT and ERROR)
 declare -A avg_decompress_time
-for tool in g07 gzip bzip2 xz zstd; do
+
+# Process G07 versions
+for version in "${G07_VERSIONS[@]}"; do
+    tool="g07-v${version}"
+    total_time=0
+    count=0
+    for file in "$DATA_DIR"/*; do
+        if [ ! -f "$file" ]; then continue; fi
+        basename=$(basename "$file")
+        result_file="$TEMP_DIR/${basename}.${tool}.result"
+        if [ -f "$result_file" ]; then
+            time=$(cat "$result_file" | cut -d',' -f5)
+            # Skip TIMEOUT and ERROR
+            if [ "$time" != "TIMEOUT" ] && [ "$time" != "ERROR" ]; then
+                total_time=$(( total_time + time ))
+                count=$(( count + 1 ))
+            fi
+        fi
+    done
+    if [ $count -gt 0 ]; then
+        avg_decompress_time[$tool]=$(( total_time / count ))
+    fi
+done
+
+# Process standard tools
+for tool in gzip bzip2 xz zstd; do
     total_time=0
     count=0
     for file in "$DATA_DIR"/*; do
@@ -495,7 +669,16 @@ echo >> "$RESULTS_MD"
 
 echo "### Files Won by Each Tool" >> "$RESULTS_MD"
 echo >> "$RESULTS_MD"
-for tool in g07 gzip bzip2 xz zstd; do
+
+# List G07 versions first
+for version in "${G07_VERSIONS[@]}"; do
+    tool="g07-v${version}"
+    wins=${tool_wins[$tool]:-0}
+    echo "- **$tool**: $wins file(s)" >> "$RESULTS_MD"
+done
+
+# Then standard tools
+for tool in gzip bzip2 xz zstd; do
     wins=${tool_wins[$tool]:-0}
     echo "- **$tool**: $wins file(s)" >> "$RESULTS_MD"
 done
@@ -510,7 +693,21 @@ echo >> "$RESULTS_MD"
 echo "| Tool | Total Original | Total Compressed | Average Ratio | Bits/Symbol | Files Tested |" >> "$RESULTS_MD"
 echo "|------|---------------|------------------|---------------|-------------|--------------|" >> "$RESULTS_MD"
 
-for tool in g07 gzip bzip2 xz zstd; do
+# Process G07 versions first
+for version in "${G07_VERSIONS[@]}"; do
+    tool="g07-v${version}"
+    if [ ${tool_file_count[$tool]:-0} -gt 0 ]; then
+        total_orig=${tool_total_original[$tool]}
+        total_comp=${tool_total_compressed[$tool]}
+        avg_ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $total_comp / $total_orig}")
+        avg_bits=$(awk "BEGIN {printf \"%.4f\", 8.0 * $total_comp / $total_orig}")
+
+        echo "| $tool | $(numfmt --to=iec-i --suffix=B $total_orig) | $(numfmt --to=iec-i --suffix=B $total_comp) | ${avg_ratio}% | ${avg_bits} | ${tool_file_count[$tool]} |" >> "$RESULTS_MD"
+    fi
+done
+
+# Then process standard tools
+for tool in gzip bzip2 xz zstd; do
     if [ ${tool_file_count[$tool]:-0} -gt 0 ]; then
         total_orig=${tool_total_original[$tool]}
         total_comp=${tool_total_compressed[$tool]}
@@ -534,7 +731,33 @@ echo
 printf "${BOLD}%-15s %15s %15s %15s${NC}\n" "Tool" "Total Original" "Total Compressed" "Avg Ratio"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-for tool in g07 gzip bzip2 xz zstd; do
+# Process G07 versions first
+for version in "${G07_VERSIONS[@]}"; do
+    tool="g07-v${version}"
+    if [ ${tool_file_count[$tool]:-0} -gt 0 ]; then
+        total_orig=${tool_total_original[$tool]}
+        total_comp=${tool_total_compressed[$tool]}
+        avg_ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $total_comp / $total_orig}")
+
+        # Determine color based on performance
+        if (( $(echo "$avg_ratio < 60" | bc -l) )); then
+            color=$GREEN
+        elif (( $(echo "$avg_ratio < 80" | bc -l) )); then
+            color=$YELLOW
+        else
+            color=$NC
+        fi
+
+        printf "${color}%-15s %15s %15s %14s%%${NC}\n" \
+            "$tool" \
+            "$(numfmt --to=iec-i --suffix=B $total_orig)" \
+            "$(numfmt --to=iec-i --suffix=B $total_comp)" \
+            "$avg_ratio"
+    fi
+done
+
+# Then process standard tools
+for tool in gzip bzip2 xz zstd; do
     if [ ${tool_file_count[$tool]:-0} -gt 0 ]; then
         total_orig=${tool_total_original[$tool]}
         total_comp=${tool_total_compressed[$tool]}

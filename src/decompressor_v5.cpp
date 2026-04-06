@@ -23,7 +23,16 @@ using StreamHeader::ModelType;
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <input_file> <output_file>" << std::endl;
+        std::cout << "═══════════════════════════════════════════════════════\n";
+        std::cout << "  G07 v5.0 - Fast Lossless Decompression\n";
+        std::cout << "═══════════════════════════════════════════════════════\n";
+        std::cout << "\nUsage: " << argv[0] << " <compressed_file> <output_file>\n\n";
+        std::cout << "Handles v5 formats only (model types 0x00-0x08, 0xFF)\n";
+        std::cout << "  • Order-0, Order-1, rANS Order-0\n";
+        std::cout << "  • BWT + MTF + ZRLE variations\n";
+        std::cout << "  • Uncompressed (0xFF)\n";
+        std::cout << "\nFor v7 files: use g07-v7-d\n";
+        std::cout << "For v8 files: use g07-v8-d\n";
         return 1;
     }
 
@@ -36,6 +45,27 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading compressed file: " << input_filename << std::endl;
         std::vector<uint8_t> compressed_data = FileIO::read_file(input_filename);
         std::cout << "Compressed size: " << compressed_data.size() << " bytes" << std::endl;
+
+        // Check if this is a v5 format (v7 is 0x09, v8 is 0x0A)
+        if (!compressed_data.empty()) {
+            uint8_t model_type_byte = compressed_data[0];
+            if (model_type_byte == 0x09) {
+                std::cerr << "\n❌ Error: This is a v7.0 compressed file (model type: 0x09)\n";
+                std::cerr << "   Use g07-v7-d to decompress this file.\n";
+                return 1;
+            }
+            if (model_type_byte == 0x0A) {
+                std::cerr << "\n❌ Error: This is a v8.0 compressed file (model type: 0x0A)\n";
+                std::cerr << "   Use g07-v8-d to decompress this file.\n";
+                return 1;
+            }
+            if (model_type_byte > 0x0A && model_type_byte != 0xFF) {
+                std::cerr << "\n❌ Error: Unknown format (model type: 0x"
+                          << std::hex << (int)model_type_byte << std::dec << ")\n";
+                std::cerr << "   This file may be from a newer version.\n";
+                return 1;
+            }
+        }
 
         // Handle rANS Order-0 format
         if (!compressed_data.empty() &&

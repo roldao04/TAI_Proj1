@@ -62,6 +62,11 @@ private:
 public:
     RangeEncoder();
 
+    // Reserve output buffer space (prevents reallocations)
+    void reserve_output(size_t estimated_size) {
+        output_buffer.reserve(estimated_size);
+    }
+
     // API compatible with existing compressor code
     void encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq);
     void finish();

@@ -12,7 +12,7 @@ SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
 
-# Source files
+# Source files (v5.0)
 RANGE_SRC = $(SRC_DIR)/arithmetic/range_coder.cpp
 RANS_SRC = $(SRC_DIR)/arithmetic/rans_static.cpp
 MODEL_SRC = $(SRC_DIR)/model/frequency_model.cpp
@@ -27,7 +27,15 @@ LIBSAIS_SRC = $(SRC_DIR)/libsais.c
 COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
 DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
 
-# Object files
+# Source files (v6.0 - new)
+PRED_UTILS_SRC = $(SRC_DIR)/model/prediction_utils.cpp
+MULTI_ORDER_SRC = $(SRC_DIR)/model/multi_order_ppm.cpp
+MIXER_SRC = $(SRC_DIR)/model/context_mixer.cpp
+BIT_ARITH_SRC = $(SRC_DIR)/arithmetic/bit_arithmetic_coder.cpp
+COMPRESSOR_V6_SRC = $(SRC_DIR)/compressor_v6.cpp
+DECOMPRESSOR_V6_SRC = $(SRC_DIR)/decompressor_v6.cpp
+
+# Object files (v5.0)
 RANGE_OBJ = $(OBJ_DIR)/range_coder.o
 RANS_OBJ = $(OBJ_DIR)/rans_static.o
 LIBSAIS_OBJ = $(OBJ_DIR)/libsais.o
@@ -42,18 +50,41 @@ HEADER_OBJ = $(OBJ_DIR)/stream_header.o
 COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
 DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
 
+# Object files (v6.0 - new)
+PRED_UTILS_OBJ = $(OBJ_DIR)/prediction_utils.o
+MULTI_ORDER_OBJ = $(OBJ_DIR)/multi_order_ppm.o
+MIXER_OBJ = $(OBJ_DIR)/context_mixer.o
+BIT_ARITH_OBJ = $(OBJ_DIR)/bit_arithmetic_coder.o
+COMPRESSOR_V6_OBJ = $(OBJ_DIR)/compressor_v6.o
+DECOMPRESSOR_V6_OBJ = $(OBJ_DIR)/decompressor_v6.o
+
 # Common objects (used by both compressor and decompressor)
 COMMON_OBJS = $(RANGE_OBJ) $(RANS_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ) $(MTF_OBJ) $(ZRLE_OBJ) $(HEADER_OBJ) $(LIBSAIS_OBJ)
+
+# v6.0 specific objects
+V6_OBJS = $(PRED_UTILS_OBJ) $(MULTI_ORDER_OBJ) $(MIXER_OBJ) $(BIT_ARITH_OBJ)
 
 # Executables
 COMPRESSOR = $(BIN_DIR)/compress
 DECOMPRESSOR = $(BIN_DIR)/decompress
+COMPRESSOR_V6 = $(BIN_DIR)/compress_v6
+DECOMPRESSOR_V6 = $(BIN_DIR)/decompress_v6
 TEST_BWT = $(BIN_DIR)/test_bwt
 
 # Targets
-.PHONY: all clean test benchmark
+.PHONY: all clean test benchmark benchmark-v6 compare-versions benchmark-all v5 v6 both
 
-all: $(COMPRESSOR) $(DECOMPRESSOR)
+# Default: build v5.0 (for backward compatibility)
+all: both
+
+# Build v5.0 only (fast compressor)
+v5: $(COMPRESSOR) $(DECOMPRESSOR)
+
+# Build v6.0 only (maximum compression)
+v6: $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
+
+# Build both versions
+both: v5 v6
 
 # Create directories
 $(OBJ_DIR):
@@ -109,6 +140,32 @@ $(COMPRESSOR): $(COMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
 $(DECOMPRESSOR): $(DECOMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
+# v6.0 object files
+$(PRED_UTILS_OBJ): $(PRED_UTILS_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(MULTI_ORDER_OBJ): $(MULTI_ORDER_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(MIXER_OBJ): $(MIXER_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BIT_ARITH_OBJ): $(BIT_ARITH_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(COMPRESSOR_V6_OBJ): $(COMPRESSOR_V6_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(DECOMPRESSOR_V6_OBJ): $(DECOMPRESSOR_V6_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Link executables (v6.0)
+$(COMPRESSOR_V6): $(COMPRESSOR_V6_OBJ) $(COMMON_OBJS) $(V6_OBJS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+$(DECOMPRESSOR_V6): $(DECOMPRESSOR_V6_OBJ) $(COMMON_OBJS) $(V6_OBJS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Test executable
 $(TEST_BWT): tests/test_bwt.cpp $(BWT_OBJ) $(LIBSAIS_OBJ) | $(BIN_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
@@ -125,7 +182,33 @@ test: $(COMPRESSOR) $(DECOMPRESSOR) $(TEST_BWT)
 	@echo "Running integration test..."
 	@bash tests/verify_lossless.sh
 
-# Run comprehensive benchmark on all data files
+# Run comprehensive benchmark on all data files (v5.0)
 benchmark: $(COMPRESSOR) $(DECOMPRESSOR)
-	@echo "Running comprehensive benchmark..."
+	@echo "Running comprehensive benchmark (v5.0)..."
 	@bash benchmarks/benchmark_all.sh
+
+# Benchmark v6.0 only
+benchmark-v6: $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
+	@echo "Running v6.0 benchmark (maximum compression)..."
+	@cd benchmarks && bash benchmark_v6.sh || (echo "Benchmark failed! Check benchmarks/benchmark_v6.sh"; exit 1)
+
+# Compare v5.0 vs v6.0
+compare-versions: $(COMPRESSOR) $(DECOMPRESSOR) $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
+	@echo "Comparing v5.0 vs v6.0..."
+	@cd benchmarks && bash compare_v5_v6.sh || (echo "Comparison failed! Check benchmarks/compare_v5_v6.sh"; exit 1)
+
+# Benchmark all versions (run independently to avoid cascading failures)
+benchmark-all: $(COMPRESSOR) $(DECOMPRESSOR) $(COMPRESSOR_V6) $(DECOMPRESSOR_V6)
+	@echo "Running all benchmarks..."
+	@echo "════════════════════════════════════════"
+	@echo "[1/3] Running v5.0 benchmark..."
+	-@bash benchmarks/benchmark_all.sh
+	@echo ""
+	@echo "[2/3] Running v6.0 benchmark..."
+	-@cd benchmarks && bash benchmark_v6.sh
+	@echo ""
+	@echo "[3/3] Running comparison..."
+	-@cd benchmarks && bash compare_v5_v6.sh
+	@echo ""
+	@echo "════════════════════════════════════════"
+	@echo "All benchmarks complete! Check benchmarks/ directory for results."

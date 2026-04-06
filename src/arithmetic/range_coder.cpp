@@ -63,7 +63,31 @@ void RangeEncoder::enc_normalize() {
 void RangeEncoder::encode_freq_internal(freq sy_f, freq lt_f, freq tot_f) {
     code_value r, tmp;
     enc_normalize();
+
+    // SAFETY CHECK: tot_f must be reasonable
+    // If tot_f is too large, r will be 0 and rc.range will become 0, causing infinite loop
+    if (tot_f == 0) {
+        throw std::runtime_error("Range encoder: tot_f is 0!");
+    }
+    if (tot_f > (rc.range / 2)) {
+        throw std::runtime_error(
+            "Range encoder: tot_f (" + std::to_string(tot_f) +
+            ") is too large (range=" + std::to_string(rc.range) +
+            "). This will cause r=0 and infinite loop!"
+        );
+    }
+
     r = rc.range / tot_f;
+
+    // Additional safety check: r must be > 0
+    if (r == 0) {
+        throw std::runtime_error(
+            "Range encoder: r=0 (range=" + std::to_string(rc.range) +
+            ", tot_f=" + std::to_string(tot_f) +
+            "). This would cause infinite loop in normalization!"
+        );
+    }
+
     tmp = r * lt_f;
     rc.low += tmp;
     if (lt_f + sy_f < tot_f)

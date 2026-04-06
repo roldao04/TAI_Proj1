@@ -10,7 +10,8 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
-| **v5.0** | 2026-03-19 | Full parallelism + rANS + PPM Method C + PPMD escape + dynamic blocks | 54.73% avg ratio | **Current** |
+| **v6.1** | 2026-04-06 | Multi-order PPM (5 orders) + Context Mixing + Static Weights | 59.85% avg ratio | **Experimental (Failed)** |
+| **v5.0** | 2026-03-19 | Full parallelism + rANS + PPM Method C + PPMD escape + dynamic blocks | 54.73% avg ratio | **Production** |
 | **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
 | **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | Superseded |
 | **v2.0** | 2026-03-05 | Multi-Model + Range Coding + Auto-Select | 62.74% avg ratio | Superseded |
@@ -20,7 +21,40 @@ Group 07 - Universidade de Aveiro
 
 ## Version Details
 
-### v5.0 (March 2026) - Current Release
+### v6.1 (April 2026) - Experimental (Failed)
+
+**Major Updates:**
+- **Multi-order PPM**: 5 orders {1, 2, 3, 4, 5} with 8M context hash table
+- **Context Mixing**: Weighted average of predictions using static pre-trained weights
+- **Static Weight Training**: Sample-based approach (train on first 100KB, freeze weights, store in header)
+- **BWT+MTF+ZRLE preprocessing**: Re-enabled after discovering it improves compression by 8pp
+- **Fixed-point arithmetic**: Deterministic encoder/decoder synchronization
+
+**Performance:**
+- Average compression ratio: **59.85%** (worse than v5.0's 54.73% by 4.93pp)
+- Speed: **158 KB/s** (157× slower than v5.0's 25 MB/s)
+- Files won vs v5.0: **0/8** (lost all benchmark files)
+
+**Key Finding:**
+- **BWT preprocessing helps multi-order PPM** (contrary to hypothesis)
+  - With BWT: 59.85% avg
+  - Without BWT: 67.94% avg (8.09pp worse)
+- **Static weights can't adapt** to different file sections → fundamental flaw
+- **Byte-level coding** leaves information on the table vs bit-level PAQ approach
+
+**Why it failed:**
+1. Static weights don't adapt during compression (PAQ uses adaptive weights)
+2. Byte-level range coding limits compression potential
+3. Pure multi-order PPM underperforms on binary files
+4. 157× slower with worse compression = not viable
+
+**Lesson learned:** Sample-based static weight training is not competitive with adaptive mixing (PAQ-style).
+
+**Detailed Documentation:** See [v6.1 README](g07_v6.1/README.md), [ARCHITECTURE](g07_v6.1/ARCHITECTURE.md), [LESSONS_LEARNED](g07_v6.1/LESSONS_LEARNED.md)
+
+---
+
+### v5.0 (March 2026) - Production Release
 
 **Major Updates:**
 
@@ -221,20 +255,21 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 |
-|--------|------|------|------|------|------|
-| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | **54.73%** |
-| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | **4.38** |
-| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | **BWT (dynamic ≤2000KB)** |
-| **Zero-run encoding** | None | None | None | ZRLE | **RLE0 (rank-255 safe)** |
-| **PPM variant** | — | Simple | Simple | Simple | **Method C + PPMD** |
-| **Escape estimator** | — | — | — | seen/4 | **singleton count** |
-| **Frequency rescaling** | No | No | No | No | **Yes (thresh 8192)** |
-| **Entropy Coder** | Arithmetic | Range | Range | Range | **Range + rANS** |
-| **Order-1 threshold** | — | 6.5 | 6.5 | 6.8 | **7.2** |
-| **Threading** | None | None | None | Parallel BWT | **Full parallel pipeline** |
-| **Decode Optimization** | Baseline | ~2× | Competitive | Baseline | **−38% Order-1, −82% Order-0** |
-| **Files Won vs bzip2** | 1/8 | 2/8 | 3/8 | 3/8 | **5/8** |
+| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v6.1 |
+|--------|------|------|------|------|------|------|
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | **54.73%** ✅ | 59.85% ❌ |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | **4.38** | 4.78 |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | **BWT (dynamic ≤2000KB)** | BWT+MTF+ZRLE |
+| **Zero-run encoding** | None | None | None | ZRLE | **RLE0 (rank-255 safe)** | ZRLE |
+| **PPM Orders** | Order-0 | Order-0/1 | Order-1 | Order-1 | **Order-1** | **Multi-order {1-5}** |
+| **Context Mixing** | No | No | No | No | No | **Yes (static weights)** |
+| **Escape estimator** | — | — | — | seen/4 | **singleton count** | Per-context |
+| **Frequency rescaling** | No | No | No | No | **Yes (thresh 8192)** | Yes |
+| **Entropy Coder** | Arithmetic | Range | Range | Range | **Range + rANS** | Range (byte-level) |
+| **Threading** | None | None | None | Parallel BWT | **Full parallel pipeline** | None |
+| **Compress Speed** | 98ms | ~2× faster | Competitive | 27-69× vs v3 | **+1.7-5.4× vs v4** | 158 KB/s (157× slower) |
+| **Files Won vs bzip2** | 1/8 | 2/8 | 3/8 | 3/8 | **5/8** ✅ | 0/8 ❌ |
+| **Status** | Superseded | Superseded | Superseded | Superseded | **Production** | **Failed Experiment** |
 | **Compress Speed vs v4.0** | — | — | — | Baseline | **+1.7–5.4×** |
 | **Decompress Speed vs v4.0** | — | — | — | Baseline | **−25% to −82%** |
 | **Beats bzip2 (total)** | No | No | No | No | **Yes (−0.20pp)** |
@@ -245,13 +280,16 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 
 ### Compression Ratio Progress
 
-| Version | Avg Ratio | Improvement vs Previous | Cumulative Improvement |
-|---------|-----------|------------------------|------------------------|
+| Version | Avg Ratio | Improvement vs Previous | Cumulative from v1.0 |
+|---------|-----------|------------------------|----------------------|
 | v1.0 | 71.44% | — | — |
 | v2.0 | 62.74% | −8.70pp | −8.70pp |
 | v3 | 57.48% | −5.26pp | −13.96pp |
 | v4.0 | 56.39% | −1.09pp | −15.05pp |
-| v5.0 | **54.73%** | **−1.66pp** | **−16.71pp** |
+| v5.0 | **54.73%** ✅ | **−1.66pp** | **−16.71pp** |
+| v6.1 | 59.85% ❌ | **+5.12pp worse** | −11.59pp (vs v1.0 only) |
+
+**Note:** v6.1 regressed from v5.0. Not part of production lineage.
 
 ### Speed Evolution
 
@@ -261,7 +299,8 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v2.0 | ~2× faster | ~2× faster | Range coding |
 | v3 | Competitive | Competitive | BWT + range |
 | v4.0 | 27–69× vs v3 | Baseline | Flat arrays + libsais + AVX2 |
-| v5.0 | **+1.7–5.4× vs v4** | **−25% to −82% vs v4** | Full parallelism + rANS + LTO |
+| v5.0 | **+1.7–5.4× vs v4** ✅ | **−25% to −82% vs v4** | Full parallelism + rANS + LTO |
+| v6.1 | 158 KB/s (157× slower vs v5.0) ❌ | Slow | Multi-order PPM + context mixing |
 
 ---
 
@@ -317,6 +356,15 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
   - Tested and reverted: rescaling 16384/32768 (too infrequent), exempting context 0 (worsened), block sizes 1024KB/1300KB (suboptimal), rescaling threshold 4096 (net negative)
 
 - **2026-03-19**: v5.0 released (11 major improvements; 54.73% avg, 5/8 files beat bzip2, −0.20pp vs bzip2)
+- **2026-04-05 - 2026-04-06**: v6.1 development (experimental)
+  - Multi-order PPM (5 orders: {1,2,3,4,5})
+  - Context mixing with static weight training (sample-based)
+  - Fixed-point arithmetic for deterministic sync
+  - Initial test: BWT disabled → 67.94% avg (failed)
+  - Re-enabled BWT+MTF+ZRLE → 59.85% avg (still failed vs v5.0's 54.73%)
+  - Finding: BWT preprocessing **helps** multi-order PPM by 8pp (contrary to hypothesis)
+  - Lesson: Static weights can't adapt → fundamental flaw vs PAQ's adaptive mixing
+- **2026-04-06**: v6.1 documented as failed experiment (loses to v5.0 by 4.93pp, 157× slower)
 
 ---
 
@@ -348,9 +396,10 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v3.0 | — | README.md |
 | v4.0 | G07-V4-C, G07-V4-D | README.md |
 | v5.0 | — | README.md (comprehensive) |
+| v6.1 | G07-V6.1-C, G07-V6.1-D | README.md, ARCHITECTURE.md, LESSONS_LEARNED.md |
 
-**Note:** v4.0 is the last version with preserved binaries. v5.0 source code represents the current implementation in the main branch.
+**Note:** v5.0 source code in main branch is the production version. v6.1 is an experimental branch (failed).
 
 ---
 
-*Last updated: 2026-03-19 (v5.0)*
+*Last updated: 2026-04-06 (v6.1 experimental added)*

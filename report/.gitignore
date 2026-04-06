@@ -1,0 +1,130 @@
+# LaTeX auxiliary files
+*.aux
+*.lof
+*.log
+*.lot
+*.fls
+*.out
+*.toc
+*.fmt
+*.fot
+*.cb
+*.cb2
+.*.lb
+
+# LaTeX intermediate files
+*.dvi
+*.xdv
+*-converted-to.*
+
+# Bibliography auxiliary files
+*.bbl
+*.bcf
+*.blg
+*-blx.aux
+*-blx.bib
+*.run.xml
+
+# Build tool auxiliary files
+*.fdb_latexmk
+*.synctex
+*.synctex(busy)
+*.synctex.gz
+*.synctex.gz(busy)
+*.pdfsync
+
+# Build directories
+**/auto/
+
+# LaTeX mkdirs
+**/.texpadtmp/
+
+# Glossaries
+*.acn
+*.acr
+*.glg
+*.glo
+*.gls
+*.glsdefs
+*.lzo
+*.lzs
+*.slg
+*.slo
+*.sls
+
+# Acronym files
+*.alg
+
+# Index files
+*.idx
+*.ilg
+*.ind
+
+# Hyperref
+*.brf
+
+# Knitr
+*-concordance.tex
+
+# Listings
+*.lol
+
+# Makeidx
+*.maf
+*.mlf
+*.mlt
+*.mtc[0-9]*
+*.slf[0-9]*
+*.slt[0-9]*
+*.stc[0-9]*
+
+# Minted
+_minted*
+*.pyg
+
+# Nomenclature
+*.nlg
+*.nlo
+*.nls
+
+# Pax
+*.pax
+
+# PdfPages
+*.pdf_tex
+
+# SyncTeX
+*.synctex.gz
+
+# TikZ & PGF
+*.dpth
+*.md5
+*.auxlock
+
+# Todonotes
+*.tdo
+
+# Xindy
+*.xdy
+
+# WinEdt
+*.bak
+*.sav
+
+# Editors
+*~
+*.swp
+*.swo
+*~
+\#*\#
+.DS_Store
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep PDF output (comment out if you don't want to track PDFs)
+# *.pdf
+
+# Keep structure but ignore content in auto-generated directories
+!.gitkeep

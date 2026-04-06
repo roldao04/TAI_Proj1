@@ -1,0 +1,70 @@
+\documentclass{article}
+
+\usepackage{arxiv}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{graphicx}
+\usepackage{listings}       % code listings
+\graphicspath{ {./images/} }
+
+% Code listing configuration
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=flexible
+}
+
+\title{Lossless Data Compression Tool\\
+{\large TAI Project \#1 - 2025/26}}
+
+\author{
+ Guilherme Rosa \\
+  Student ID: 113968\\
+  Universidade de Aveiro\\
+  Aveiro, Portugal \\
+  \texttt{guilherme.rosa@ua.pt} \\
+  \And
+ João Roldão \\
+  Student ID: 113920\\
+  Universidade de Aveiro\\
+  Aveiro, Portugal \\
+  \texttt{joao.roldao@ua.pt} \\
+  \And
+ Henrique Teixeira \\
+  Student ID: 114588\\
+  Universidade de Aveiro\\
+  Aveiro, Portugal \\
+  \texttt{henrique.teixeira@ua.pt} \\
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents a comprehensive study of lossless data compression techniques, culminating in the development of an efficient compression tool for the Algorithmic Information Theory (TAI) course. Our implementation combines Burrows-Wheeler Transform (BWT) preprocessing with adaptive Prediction by Partial Matching (PPM) models and multiple entropy coding techniques including Range Coding and Asymmetric Numeral Systems (rANS). Through iterative optimization across six major versions, we achieved an average compression ratio of 54.73\% on benchmark datasets, outperforming bzip2 by 0.20 percentage points and winning on 5 out of 8 test files. The final production system (v5.0) incorporates full pipeline parallelism, achieving 2-5× compression speedup while maintaining competitive ratios. This work demonstrates the effectiveness of combining classical preprocessing transforms with modern entropy coding and parallel processing techniques.
+\end{abstract}
+
+% Keywords
+\keywords{Data Compression \and Burrows-Wheeler Transform \and PPM \and Range Coding \and rANS \and Parallel Processing}
+
+% Include sections
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/methodology}
+\input{sections/implementation}
+\input{sections/results}
+\input{sections/conclusion}
+
+% Bibliography
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\end{document}

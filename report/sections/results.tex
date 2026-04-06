@@ -1,0 +1,37 @@
+\section{Results}
+\label{sec:results}
+
+% TODO: Fill in experimental results
+% Suggested structure:
+% - Performance metrics across versions
+% - Comparison with industry tools
+% - File-by-file analysis
+% - Speed vs compression ratio trade-offs
+
+\subsection{Compression Ratio Evolution}
+% TODO: Table/graph showing improvement from v1.0 (71.44\%) to v5.0 (54.73\%)
+% Reference versions/VERSIONS.md for detailed data
+
+\subsection{Benchmark Comparison}
+% TODO: Comparison with gzip, bzip2, xz, zstd
+% Include table showing we beat bzip2 by 0.20pp
+
+\begin{table}[htbp]
+\caption{Compression Ratio Comparison (TODO: fill with actual data)}
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+File & Size & gzip & bzip2 & xz & zstd & \textbf{G07 v5.0} \\
+\midrule
+A & 1.3MB & ? & 54.05\% & ? & ? & \textbf{53.30\%} \\
+% TODO: Add remaining files
+\bottomrule
+\end{tabular}
+\label{tab:compression_comparison}
+\end{table}
+
+\subsection{Performance Analysis}
+% TODO: Compression/decompression speed, memory usage
+
+\subsection{Ablation Studies}
+% TODO: Impact of BWT, MTF, RLE, PPM Method C, frequency rescaling, etc.

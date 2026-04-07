@@ -57,8 +57,10 @@ make
 ```
 
 This creates:
-- `bin/compress` - Compression tool
-- `bin/decompress` - Decompression tool
+- `bin/g07-v5-c` - Compression tool (v5.0)
+- `bin/g07-v5-d` - Decompression tool (v5.0)
+- `bin/g07-v6-c` - Compression tool (v6.0) if v6 exists
+- `bin/g07-v6-d` - Decompression tool (v6.0) if v6 exists
 
 To clean build artifacts:
 
@@ -73,62 +75,31 @@ make clean
 ### Compression
 
 ```bash
-./bin/compress <input_file> <compressed_file> [options]
+./bin/g07-v5-c <input_file> <output_file>
 ```
 
-**Options:**
-- `--model auto|order0|order1` - Model selection (default: auto)
-  - `auto` - Automatic selection based on file characteristics (recommended)
-  - `order0` - Force Order-0 frequency model (fast, universal)
-  - `order1` - Force Order-1 context model (better compression for low-entropy data)
-- `--bwt` - Force BWT preprocessing (even if auto-selection says no)
-- `--no-bwt` - Disable BWT preprocessing (revert to v2.0 behavior)
-- `--mtf` - Force Move-to-Front after BWT (default: enabled whenever BWT is enabled)
-- `--no-mtf` - Disable Move-to-Front after BWT
-- `--zrle` - Force zero-run RLE after MTF
-- `--no-zrle` - Disable zero-run RLE after MTF (default: auto-enable only if it shrinks the MTF stream)
-- `--yes, -y` - Skip interactive prompts (useful for automation/benchmarks)
-
-**Examples:**
+**Example:**
 ```bash
-# Auto-selection (recommended - auto-selects model and BWT)
-./bin/compress data/test.txt data/test.compressed
-
-# Force BWT + MTF + Order-1 (maximum compression on text)
-./bin/compress data/test.txt data/test.compressed --model order1 --bwt --mtf
-
-# Force BWT + MTF + zero-run RLE
-./bin/compress data/test.txt data/test.compressed --model order1 --bwt --mtf --zrle
-
-# Disable BWT for speed
-./bin/compress data/test.txt data/test.compressed --no-bwt
-
-# Automated/batch processing (no prompts)
-./bin/compress data/test.txt data/test.compressed --yes
+./bin/g07-v5-c data/A data/A.compressed
 ```
 
-**Auto-Selection Rules:**
-- **BWT Selection:**
-  - Enabled when entropy < 6.5 and file size > 10240 bytes
-  - Disabled for high-entropy or very small files
-- **Model Selection:**
-  - Entropy > 7.5 → Store uncompressed (incompressible data)
-  - Entropy 6.8-7.5 → Order-0 (high entropy, Order-1 overhead not worth it)
-  - File < 100KB → Order-0 (adaptive overhead not worthwhile)
-  - Otherwise → Order-1 (low entropy, achieves 20-50% better compression)
+**Note:** v5.0 uses hardcoded optimal settings. No flags needed.
+- Auto-selects model (Order-0 vs Order-1 based on entropy)
+- Auto-enables BWT when entropy < 6.5 and file size > 10KB
+- Auto-enables MTF + ZRLE when beneficial
 
 ### Decompression
 
 ```bash
-./bin/decompress <compressed_file> <output_file>
+./bin/g07-v5-d <compressed_file> <output_file>
 ```
 
-Example:
+**Example:**
 ```bash
-./bin/decompress data/test.compressed data/test.decompressed
+./bin/g07-v5-d data/A.compressed data/A.decompressed
 ```
 
-Note: Decompression automatically detects which model was used during compression.
+**Note:** Decompression automatically detects which model and transforms were used during compression.
 
 ---
 
@@ -268,42 +239,41 @@ Features:
 
 ## Performance Notes
 
-- **Memory**: Uses ~8GB max (requirement compliant)
-- **Optimization**: Compiled with `-O3` for performance
+- **Memory**: Uses ~1-2GB (requirement compliant)
+- **Optimization**: Compiled with `-O3 -march=native -flto=auto` for maximum performance
 - **Platform**: Tested on Linux
-- **Average Compression Ratio**: **57.48%** (v3)
-  - v2.0: 62.74% | v1.0: 71.44%
-  - **19.5% improvement over v1.0**
-  - **8.4% improvement over v2.0**
-- **Overall Ranking**: **#3** out of 5 tools (xz, bzip2, g07, zstd, gzip)
-- **Files Won**: 3/8 files (Files A, D, G)
-  - File A (text): 51.96% - Best among all tools
-  - File G (structured): 27.92% - Best among all tools
-- **Speed**: Competitive with multi-model system, BWT adds minimal overhead
+- **Average Compression Ratio**: **54.73%** (v5.0)
+  - Beats bzip2 by 0.20pp
+  - Competitive ranking with industry tools
+- **Speed**: ~25 MB/s compression speed
+- **Binary Size**: < 120KB per binary (well under 1MB requirement)
 
 ---
 
 ## Version History
 
-See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history and [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md) for comprehensive documentation.
+See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history.
 
-**Current Version**: 3.0 (March 2026)
-- **BWT preprocessing** (block-based, 1024-byte blocks)
+**Current Version**: 5.0 (April 2026)
+- Simplified CLI (no flags needed - hardcoded optimal settings)
+- Auto-selection for model, BWT, MTF, ZRLE
+- BWT preprocessing (block-based, 900KB blocks)
 - Multi-model system (Order-0 + Order-1)
 - Range coding (faster than arithmetic)
-- Intelligent auto-selection (BWT + model)
-- **57.48% average compression ratio**
-- **#3 ranking** vs industry tools
+- **54.73% average compression ratio**
+- **~25 MB/s compression speed**
 
 **Previous Versions**:
-- **v2.0** (March 2026): Multi-model + Range coding - 62.74% ratio
-- **v1.0** (February 2026): Order-0 + Arithmetic coding - 71.44% ratio
+- **v4.0**: Advanced model improvements
+- **v3.0**: BWT preprocessing introduced - 57.48% ratio
+- **v2.0**: Multi-model + Range coding - 62.74% ratio
+- **v1.0**: Order-0 + Arithmetic coding - 71.44% ratio
 
 ---
 
 ## Future Improvements
 
-Potential enhancements (see [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md#future-improvements) for details):
+Potential enhancements (see [roadmap.md](roadmap.md) for detailed plans):
 1. **Variable BWT Block Size**: Adaptive block size selection (1KB - 4KB)
 2. **Parallel BWT Processing**: Multi-threaded block processing
 3. **Order-1 Model Optimization**: Replace `std::map` contexts with denser structures

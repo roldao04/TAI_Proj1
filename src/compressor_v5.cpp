@@ -184,22 +184,38 @@ int main(int argc, char* argv[]) {
                     std::vector<uint8_t> mtf_data  = MoveToFront::transform(bwt_data);
 
                     std::vector<uint8_t> zrle_data = ZeroRunLengthEncoder::encode(mtf_data);
-                    bool has_rank255 = std::any_of(mtf_data.begin(), mtf_data.end(),
-                                                   [](uint8_t b){ return b == 255; });
-                    bool use_zrle_this = !has_rank255 && (zrle_preference != -1) &&
+                    bool use_zrle_this = (zrle_preference != -1) &&
                                         (zrle_preference == 1 || zrle_data.size() < mtf_data.size());
                     const std::vector<uint8_t>& to_encode = use_zrle_this ? zrle_data : mtf_data;
 
                     ContextModel ctx_model;
                     ctx_model.set_encoding_method_ppm_c();
+                    ctx_model.enable_order2();
                     ctx_model.init_adaptive();
                     RangeEncoder range_enc;
                     for (uint8_t b : to_encode) {
-                        auto res = ctx_model.encode_symbol_fast(b);
-                        for (int si = 0; si < res.count; si++) {
-                            range_enc.encode_symbol(res.steps[si].cum_freq_low,
-                                                    res.steps[si].cum_freq_high,
-                                                    res.steps[si].total_freq);
+                        if (ctx_model.has_order2_context()) {
+                            uint32_t lo, hi, tot;
+                            if (ctx_model.get_o2_byte_range(b, lo, hi, tot)) {
+                                range_enc.encode_symbol(lo, hi, tot);
+                            } else {
+                                uint32_t esc_lo, esc_hi, esc_tot;
+                                ctx_model.get_o2_escape_range(esc_lo, esc_hi, esc_tot);
+                                range_enc.encode_symbol(esc_lo, esc_hi, esc_tot);
+                                auto res = ctx_model.encode_symbol_fast(b);
+                                for (int si = 0; si < res.count; si++) {
+                                    range_enc.encode_symbol(res.steps[si].cum_freq_low,
+                                                            res.steps[si].cum_freq_high,
+                                                            res.steps[si].total_freq);
+                                }
+                            }
+                        } else {
+                            auto res = ctx_model.encode_symbol_fast(b);
+                            for (int si = 0; si < res.count; si++) {
+                                range_enc.encode_symbol(res.steps[si].cum_freq_low,
+                                                        res.steps[si].cum_freq_high,
+                                                        res.steps[si].total_freq);
+                            }
                         }
                         ctx_model.update_frequencies(b);
                         ctx_model.update_history(b);
@@ -208,7 +224,8 @@ int main(int argc, char* argv[]) {
 
                     StreamHeader::ParallelBlockMeta meta;
                     meta.bwt_primary_index       = primary_index;
-                    meta.transform_flags         = StreamHeader::TRANSFORM_BWT | StreamHeader::TRANSFORM_MTF;
+                    meta.transform_flags         = StreamHeader::TRANSFORM_BWT | StreamHeader::TRANSFORM_MTF
+                                                 | StreamHeader::TRANSFORM_ORDER2;
                     if (use_zrle_this) meta.transform_flags |= StreamHeader::TRANSFORM_ZRLE;
                     meta.original_block_size      = static_cast<uint32_t>(block.size());
                     meta.preprocessed_block_size  = static_cast<uint32_t>(to_encode.size());

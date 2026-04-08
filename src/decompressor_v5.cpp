@@ -151,6 +151,8 @@ int main(int argc, char* argv[]) {
 
                 ContextModel ctx_model;
                 ctx_model.set_encoding_method_simple();
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_ORDER2))
+                    ctx_model.enable_order2();
                 ctx_model.init_adaptive();
                 RangeDecoder decoder(encoded);
 
@@ -160,7 +162,35 @@ int main(int argc, char* argv[]) {
                     uint32_t lo, hi, total;
                     int sym;
 
-                    if (ctx_model.has_order1_context()) {
+                    if (ctx_model.has_order2_context()) {
+                        // Try O2 first
+                        uint32_t cum = decoder.get_current_count(ctx_model.get_order2_total());
+                        sym = ctx_model.find_symbol_and_get_range_o2(cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during O2 decompression");
+                        decoder.decode_symbol(lo, hi, total);
+                        if (sym == 256) {
+                            // O2 escape: fall to O1/O0
+                            if (ctx_model.has_order1_context()) {
+                                cum = decoder.get_current_count(ctx_model.get_order1_total());
+                                sym = ctx_model.find_symbol_and_get_range(1, cum, lo, hi, total);
+                                if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                decoder.decode_symbol(lo, hi, total);
+                                if (sym == 256) {
+                                    const uint32_t* ctx_freq = ctx_model.get_order1_freq_ptr();
+                                    uint32_t excl_total = ctx_model.get_order0_total_excl_ctx(ctx_freq);
+                                    cum = decoder.get_current_count(excl_total);
+                                    sym = ctx_model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
+                                    if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                    decoder.decode_symbol(lo, hi, total);
+                                }
+                            } else {
+                                cum = decoder.get_current_count(ctx_model.get_order0_total());
+                                sym = ctx_model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                                if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                decoder.decode_symbol(lo, hi, total);
+                            }
+                        }
+                    } else if (ctx_model.has_order1_context()) {
                         uint32_t cum = decoder.get_current_count(ctx_model.get_order1_total());
                         sym = ctx_model.find_symbol_and_get_range(1, cum, lo, hi, total);
                         if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
@@ -170,7 +200,7 @@ int main(int argc, char* argv[]) {
                             const uint32_t* ctx_freq = ctx_model.get_order1_freq_ptr();
                             uint32_t excl_total = ctx_model.get_order0_total_excl_ctx(ctx_freq);
                             cum = decoder.get_current_count(excl_total);
-                            sym = ctx_model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, lo, hi, total);
+                            sym = ctx_model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
                             if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                             decoder.decode_symbol(lo, hi, total);
                         }
@@ -314,7 +344,7 @@ int main(int argc, char* argv[]) {
                         const uint32_t* ctx_freq = model.get_order1_freq_ptr();
                         uint32_t excl_total = model.get_order0_total_excl_ctx(ctx_freq);
                         cum = decoder.get_current_count(excl_total);
-                        sym = model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, lo, hi, total);
+                        sym = model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
                         if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                         decoder.decode_symbol(lo, hi, total);
                     }

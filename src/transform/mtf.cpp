@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 
 namespace {
 
@@ -16,17 +17,16 @@ void reset_mtf_state(std::array<uint8_t, 256>& symbols,
 void move_symbol_to_front(std::array<uint8_t, 256>& symbols,
                           std::array<uint8_t, 256>& positions,
                           uint8_t rank) {
-    if (rank == 0) {
-        return;
-    }
+    if (rank == 0) return;
 
     uint8_t symbol = symbols[rank];
-    for (size_t idx = rank; idx > 0; idx--) {
-        symbols[idx] = symbols[idx - 1];
-        positions[symbols[idx]] = static_cast<uint8_t>(idx);
-    }
-
+    // Hardware-optimized memory move (SIMD) instead of element-by-element loop
+    std::memmove(&symbols[1], &symbols[0], rank);
     symbols[0] = symbol;
+    // Update positions for shifted symbols
+    for (uint8_t idx = rank; idx > 0; idx--) {
+        positions[symbols[idx]] = idx;
+    }
     positions[symbol] = 0;
 }
 
@@ -50,6 +50,7 @@ std::vector<uint8_t> transform_range(const std::vector<uint8_t>& input,
     return output;
 }
 
+// Inverse transform: no positions array needed (only read symbols[rank])
 std::vector<uint8_t> inverse_transform_range(const std::vector<uint8_t>& input,
                                              size_t start,
                                              size_t end) {
@@ -57,20 +58,87 @@ std::vector<uint8_t> inverse_transform_range(const std::vector<uint8_t>& input,
     output.reserve(end - start);
 
     std::array<uint8_t, 256> symbols;
-    std::array<uint8_t, 256> positions;
-    reset_mtf_state(symbols, positions);
+    for (size_t i = 0; i < 256; i++) symbols[i] = static_cast<uint8_t>(i);
 
     for (size_t idx = start; idx < end; idx++) {
         uint8_t rank = input[idx];
         uint8_t symbol = symbols[rank];
         output.push_back(symbol);
-        move_symbol_to_front(symbols, positions, rank);
+        if (rank > 0) {
+            std::memmove(&symbols[1], &symbols[0], rank);
+            symbols[0] = symbol;
+        }
     }
 
     return output;
 }
 
 } // namespace
+
+std::vector<uint8_t> MoveToFront::wfc_transform(const std::vector<uint8_t>& input) {
+    std::vector<uint8_t> output;
+    output.reserve(input.size());
+
+    std::array<uint8_t, 256> symbols;
+    std::array<uint8_t, 256> positions;
+    std::array<uint32_t, 256> counts;
+    for (int i = 0; i < 256; i++) {
+        symbols[i]   = static_cast<uint8_t>(i);
+        positions[i] = static_cast<uint8_t>(i);
+        counts[i]    = 0;
+    }
+
+    for (uint8_t sym : input) {
+        uint8_t rank = positions[sym];
+        output.push_back(rank);
+
+        counts[sym]++;
+
+        // Bubble up while this symbol's count exceeds left neighbor's
+        while (rank > 0) {
+            uint8_t left = symbols[rank - 1];
+            if (counts[sym] <= counts[left]) break;
+            // Swap sym and left neighbor
+            symbols[rank]    = left;
+            symbols[rank - 1] = sym;
+            positions[left]  = rank;
+            rank--;
+        }
+        positions[sym] = rank;
+    }
+
+    return output;
+}
+
+std::vector<uint8_t> MoveToFront::wfc_inverse_transform(const std::vector<uint8_t>& input) {
+    std::vector<uint8_t> output;
+    output.reserve(input.size());
+
+    std::array<uint8_t, 256> symbols;
+    std::array<uint32_t, 256> counts;
+    for (int i = 0; i < 256; i++) {
+        symbols[i] = static_cast<uint8_t>(i);
+        counts[i]  = 0;
+    }
+
+    for (uint8_t rank : input) {
+        uint8_t sym = symbols[rank];
+        output.push_back(sym);
+
+        counts[sym]++;
+
+        // Same bubble-up as forward
+        while (rank > 0) {
+            uint8_t left = symbols[rank - 1];
+            if (counts[sym] <= counts[left]) break;
+            symbols[rank]    = left;
+            rank--;
+        }
+        symbols[rank] = sym;
+    }
+
+    return output;
+}
 
 std::vector<uint8_t> MoveToFront::transform(const std::vector<uint8_t>& input) {
     return transform_range(input, 0, input.size());

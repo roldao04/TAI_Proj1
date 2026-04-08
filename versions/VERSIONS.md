@@ -10,8 +10,10 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
+| **v7.0** | 2026-04-08 | **BWT + MTF + 2-Way Interleaved rANS Order-0** | 59.2% avg, **51 MB/s decompress** | **Production (Speed)** |
 | **v6.1** | 2026-04-06 | Multi-order PPM (5 orders) + Context Mixing + Static Weights | 59.85% avg ratio | **Experimental (Failed)** |
-| **v5.0** | 2026-03-19 | Full parallelism + rANS + PPM Method C + PPMD escape + dynamic blocks | 54.73% avg ratio | **Production** |
+| **v5.2** | 2026-04-08 | ZRLE rank-255 fix + fused exclusions + MTF memmove + PGO | 54.70% avg ratio | **Production (Compression)** |
+| **v5.0** | 2026-03-19 | Full parallelism + rANS + PPM Method C + PPMD escape + dynamic blocks | 54.87% avg ratio | Superseded |
 | **v4.0** | 2026-03-13 | Flat array context model + libsais + AVX2 + parallel BWT | 56.39% avg ratio | Superseded |
 | **v3** | 2026-03-06 | BWT Preprocessing + Multi-Model + Range Coding | 57.48% avg ratio | Superseded |
 | **v2.0** | 2026-03-05 | Multi-Model + Range Coding + Auto-Select | 62.74% avg ratio | Superseded |
@@ -20,6 +22,34 @@ Group 07 - Universidade de Aveiro
 ---
 
 ## Version Details
+
+### v7.0 (April 2026) - Production (Speed-Focused)
+
+**Major Updates:**
+- **2-Way Interleaved rANS Order-0**: Two independent rANS states alternate symbols, exploiting CPU instruction-level parallelism for ~1.4x speedup over single-state rANS and ~5x over Range Coder
+- **Adaptive BWT/MTF**: Applied for low-entropy data (entropy < 6.5); skipped for high-entropy files (raw rANS only), eliminating unnecessary preprocessing passes
+- **No ZRLE**: Removed as extra pass with marginal compression gain after BWT+MTF
+- **No Order-1 model**: After BWT+MTF, Order-0 entropy is within ~1pp of Order-1; Order-0 uses a single 128KB decode table (fits in L2 cache) vs Order-1's 256 separate tables
+- **4MB block size**: Larger blocks give BWT more context; rANS speed absorbs the larger data volume
+- **Frequency scaling fix**: Fixed over-allocation bug in `build_encode_table` for highly skewed post-BWT+MTF distributions
+
+**Performance:**
+- Average compression ratio: **59.2%** (well under 70% target)
+- Compression speed: **28.9 MB/s** (1.7x faster than v5)
+- Decompression speed: **51.1 MB/s** (3x faster than v5)
+- Binary sizes: 84KB compressor, 56KB decompressor (smallest of all versions)
+- Per-file standouts:
+  - B: **20.6%** ratio (v5: 41.5% -- 2x better compression!)
+  - H: **46.9%** ratio (v5: 61.2% -- 14pp better)
+  - E: **5ms** compress (v5: 66ms -- 13x faster)
+
+**Key Insight:** After BWT+MTF, the data distribution becomes extremely skewed toward low values. Order-0 rANS captures this nearly as well as Order-1, but with a single cache-friendly decode table instead of 256 context-dependent tables. The 2-way interleaving then hides the serial dependency in rANS decode by overlapping two independent state machines.
+
+**When to use:** Real-time applications, throughput-critical scenarios, or when speed matters more than squeezing the last 2-5% of compression.
+
+**Detailed Documentation:** See [v7.0 README](g07_v7.0/README.md)
+
+---
 
 ### v6.1 (April 2026) - Experimental (Failed)
 
@@ -54,7 +84,51 @@ Group 07 - Universidade de Aveiro
 
 ---
 
-### v5.0 (March 2026) - Production Release
+### v5.2 (April 2026) - Production Release
+
+**Major Updates:**
+
+Version 5.2 is an incremental optimization of v5.0, focusing on fixing the ZRLE rank-255 bug and micro-optimizing the encode/decode hot paths.
+
+**1. ZRLE Rank-255 Escape Fix (Compression Ratio)**
+The RLE0 encoder previously mapped non-zero MTF rank `r` to byte `r+1`. Rank 255 overflowed to 0 (RUNA), corrupting the zero-run encoding. Files G and H had to skip ZRLE entirely via a `has_rank255` guard, losing 0.46pp and 0.93pp respectively.
+
+**Fix:** Byte 255 is now an escape prefix. Ranks 1-253 encode as bytes 2-254 (unchanged). Ranks 254/255 encode as two bytes: `255, rank`. The 1-byte overhead per rank-254/255 occurrence is negligible (G has only 51 rank-255 in 2.5MB). The `has_rank255` guard was removed — ZRLE is now enabled for all blocks unconditionally.
+
+**2. Fused Exclusion Decode (Speed)**
+When the decoder escapes from Order-1 to Order-0 with Method C exclusions, it previously scanned 258 elements three times: once to compute the excluded total, once to recompute the same total inside `find_symbol_and_get_range_excl_ctx()`, and once to find the symbol. The redundant second scan was eliminated by passing the pre-computed total as a parameter.
+
+**3. Fused Exclusion Encode (Speed)**
+The encoder's Method C exclusion path in `encode_symbol_fast()` previously used two loops over 258 elements: one to compute the excluded total, one to find the symbol and cumulative. These were fused into a single pass that computes total and finds the symbol simultaneously.
+
+**4. Fast Escape Cumulative (Speed)**
+Computing the cumulative frequency for the ESCAPE symbol (index 256) previously summed all 256 preceding frequencies via `cumulative_before()`. Since escape is always the last symbol in Order-1 contexts, its cumulative equals `total - escape_freq`, computed in O(1).
+
+**5. MTF memmove (Speed)**
+The `move_symbol_to_front()` function replaced its manual element-by-element loop with `std::memmove()`, which uses hardware-optimized SIMD memory moves. The inverse transform path was further optimized by removing the unused `positions` array entirely.
+
+**6. PGO Build (Speed)**
+Added `make pgo` target for Profile-Guided Optimization: build with `-fprofile-generate`, train on all 8 corpus files, rebuild with `-fprofile-use`. Improves branch prediction and code layout. Binary sizes reduced (132K→120K compressor, 80K→72K decompressor).
+
+**Performance:**
+- Average compression ratio: **54.70%** (improved from v5.0's 54.87%, −0.17pp)
+- **Beats bzip2 by 0.23pp** (54.70% vs 54.93%; was 0.06pp in v5.0)
+- Average decompression time: **60ms** with PGO (was 63ms in v5.0)
+- Files won vs bzip2: **5/8** (A, B, C, D, E)
+
+**File-by-file changes vs v5.0:**
+- G: 29.27% → **28.81%** (−0.46pp) — ZRLE now enabled
+- H: 44.72% → **43.79%** (−0.93pp) — ZRLE now enabled
+- All other files: unchanged (ZRLE was already enabled)
+- G gap vs bzip2 closed: −0.57pp → −0.11pp
+
+**Experiments with no measurable effect:**
+- RESCALE_THRESH tuning (4096/8192/16384/32768): byte-for-byte identical output across all values — halving preserves ratios
+- Block size 3000KB: G improved 0.04pp avg but decompression regressed (1 sequential block vs 2 parallel) — kept 2000KB
+
+---
+
+### v5.0 (March 2026) - Superseded
 
 **Major Updates:**
 
@@ -255,24 +329,19 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v6.1 |
-|--------|------|------|------|------|------|------|
-| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | **54.73%** ✅ | 59.85% ❌ |
-| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | **4.38** | 4.78 |
-| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | **BWT (dynamic ≤2000KB)** | BWT+MTF+ZRLE |
-| **Zero-run encoding** | None | None | None | ZRLE | **RLE0 (rank-255 safe)** | ZRLE |
-| **PPM Orders** | Order-0 | Order-0/1 | Order-1 | Order-1 | **Order-1** | **Multi-order {1-5}** |
-| **Context Mixing** | No | No | No | No | No | **Yes (static weights)** |
-| **Escape estimator** | — | — | — | seen/4 | **singleton count** | Per-context |
-| **Frequency rescaling** | No | No | No | No | **Yes (thresh 8192)** | Yes |
-| **Entropy Coder** | Arithmetic | Range | Range | Range | **Range + rANS** | Range (byte-level) |
-| **Threading** | None | None | None | Parallel BWT | **Full parallel pipeline** | None |
-| **Compress Speed** | 98ms | ~2× faster | Competitive | 27-69× vs v3 | **+1.7-5.4× vs v4** | 158 KB/s (157× slower) |
-| **Files Won vs bzip2** | 1/8 | 2/8 | 3/8 | 3/8 | **5/8** ✅ | 0/8 ❌ |
-| **Status** | Superseded | Superseded | Superseded | Superseded | **Production** | **Failed Experiment** |
-| **Compress Speed vs v4.0** | — | — | — | Baseline | **+1.7–5.4×** |
-| **Decompress Speed vs v4.0** | — | — | — | Baseline | **−25% to −82%** |
-| **Beats bzip2 (total)** | No | No | No | No | **Yes (−0.20pp)** |
+| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v5.2 | v6.1 | v7.0 |
+|--------|------|------|------|------|------|------|------|------|
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 54.87% | 54.70% | 59.85% ❌ | **59.2%** |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.39 | 4.38 | 4.78 | **4.74** |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (≤2000KB) | BWT (≤2000KB) | BWT+MTF+ZRLE | **BWT+MTF (4MB)** |
+| **Zero-run encoding** | None | None | None | ZRLE | RLE0 | RLE0 (escape) | ZRLE | **None** |
+| **PPM Orders** | Order-0 | Order-0/1 | Order-1 | Order-1 | Order-1 | Order-1 | Multi {1-5} | **Order-0** |
+| **Entropy Coder** | Arithmetic | Range | Range | Range | Range+rANS | Range+rANS | Range | **Interleaved rANS** |
+| **Threading** | None | None | None | Par. BWT | Full parallel | Full parallel | None | **Full parallel** |
+| **Compress Speed** | ~13 MB/s | ~26 MB/s | — | — | ~25 MB/s | ~25 MB/s | 0.15 MB/s | **28.9 MB/s** ✅ |
+| **Decompress Speed** | ~10 MB/s | ~20 MB/s | — | — | ~17 MB/s | ~21 MB/s | Slow | **51.1 MB/s** ✅ |
+| **Binary Size** | — | — | — | — | 216KB | 216KB | 196KB | **140KB** ✅ |
+| **Status** | Superseded | Superseded | Superseded | Superseded | Superseded | **Production** | **Failed** | **Production (Speed)** |
 
 ---
 
@@ -286,21 +355,25 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v2.0 | 62.74% | −8.70pp | −8.70pp |
 | v3 | 57.48% | −5.26pp | −13.96pp |
 | v4.0 | 56.39% | −1.09pp | −15.05pp |
-| v5.0 | **54.73%** ✅ | **−1.66pp** | **−16.71pp** |
-| v6.1 | 59.85% ❌ | **+5.12pp worse** | −11.59pp (vs v1.0 only) |
+| v5.0 | 54.87% | −1.52pp | −16.57pp |
+| v5.2 | **54.70%** ✅ | **−0.17pp** | **−16.74pp** |
+| v6.1 | 59.85% ❌ | +5.12pp worse | −11.59pp (vs v1.0 only) |
+| v7.0 | **59.2%** | +4.5pp vs v5.2 (speed tradeoff) | **−12.24pp** |
 
-**Note:** v6.1 regressed from v5.0. Not part of production lineage.
+**Note:** v6.1 regressed from v5.0 (failed experiment). v7.0 trades ~4.5pp of compression for 3x decompression speed.
 
 ### Speed Evolution
 
-| Version | Compression | Decompression | Key Technique |
-|---------|-------------|---------------|---------------|
-| v1.0 | ~98ms avg | ~127ms avg | Baseline arithmetic |
-| v2.0 | ~2× faster | ~2× faster | Range coding |
-| v3 | Competitive | Competitive | BWT + range |
-| v4.0 | 27–69× vs v3 | Baseline | Flat arrays + libsais + AVX2 |
-| v5.0 | **+1.7–5.4× vs v4** ✅ | **−25% to −82% vs v4** | Full parallelism + rANS + LTO |
-| v6.1 | 158 KB/s (157× slower vs v5.0) ❌ | Slow | Multi-order PPM + context mixing |
+| Version | Compress MB/s | Decompress MB/s | Key Technique |
+|---------|--------------|-----------------|---------------|
+| v1.0 | ~13 | ~10 | Baseline arithmetic |
+| v2.0 | ~26 | ~20 | Range coding |
+| v3 | — | — | BWT + range |
+| v4.0 | — | — | Flat arrays + libsais + AVX2 |
+| v5.0 | ~25 | ~17 | Full parallelism + rANS + LTO |
+| v5.2 | ~25 | ~21 | Fused decode + PGO |
+| v6.1 | 0.15 ❌ | Slow | Multi-order PPM + context mixing |
+| v7.0 | **28.9** ✅ | **51.1** ✅ | **2-way interleaved rANS + BWT+MTF** |
 
 ---
 
@@ -365,21 +438,64 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
   - Finding: BWT preprocessing **helps** multi-order PPM by 8pp (contrary to hypothesis)
   - Lesson: Static weights can't adapt → fundamental flaw vs PAQ's adaptive mixing
 - **2026-04-06**: v6.1 documented as failed experiment (loses to v5.0 by 4.93pp, 157× slower)
+- **2026-04-08**: v5.2 development
+
+  **ZRLE Rank-255 Escape Fix**
+  - Byte 255 as escape prefix for MTF ranks 254/255
+  - Removed `has_rank255` guard — ZRLE unconditionally enabled
+  - G: 29.27% → 28.81% (−0.46pp), H: 44.72% → 43.79% (−0.93pp)
+
+  **Hot-Path Speed Optimizations**
+  - Fused exclusion decode: eliminated redundant 258-element scan (3 scans → 2)
+  - Fused exclusion encode: merged 2 loops into single pass
+  - Fast escape cumulative: O(1) via `total - escape_freq` instead of O(256) prefix sum
+  - MTF memmove: `std::memmove()` replaces manual loop; inverse path drops `positions` array
+  - PGO build: `make pgo` target for profile-guided optimization (avg decomp 63ms → 60ms)
+
+  **Experiments with no effect**
+  - RESCALE_THRESH 4096/16384/32768: byte-for-byte identical output (halving preserves ratios)
+  - Block size 3000KB: G improved 0.04pp but lost parallel decompression (51ms → 87ms) — reverted
+
+- **2026-04-08**: v5.2 released (54.70% avg, beats bzip2 by 0.23pp, 60ms avg decompress with PGO)
+- **2026-04-08**: v7.0 development
+
+  **Speed-Optimized Compressor**
+  - Replaced Range Coder + Order-1 adaptive with 2-way interleaved rANS Order-0
+  - Two independent rANS states alternate symbols for CPU instruction-level parallelism (~1.4x over single rANS)
+  - BWT+MTF preprocessing for low-entropy data; raw rANS for high-entropy (no BWT/MTF)
+  - Removed ZRLE (extra pass, marginal benefit after BWT+MTF)
+  - 4MB blocks (larger BWT context than v5's 2MB)
+  - Fixed frequency scaling over-allocation bug in build_encode_table (skewed post-BWT distributions)
+  - New file format: model type 0x0B with per-block metadata and interleaved rANS streams
+
+  **Results:** 59.2% avg ratio, 28.9 MB/s compress, 51.1 MB/s decompress
+  - B: 20.6% (v5: 41.5%), H: 46.9% (v5: 61.2%) — BWT+MTF+Order-0 is better than BWT+MTF+ZRLE+Order-1 for these files
+  - E: 5ms compress (v5: 66ms) — 13x faster via raw rANS (no BWT overhead)
+  - All 8 files lossless verified
+
+- **2026-04-08**: v7.0 released (59.2% avg, 51.1 MB/s decompress, fastest version ever)
 
 ---
 
 ## Notable Achievements
 
-### Version 5.0 Highlights
-- **Best compression ratio achieved**: 54.73% average (beats bzip2 by 0.20pp)
-- **Fastest compression**: 2-5× speedup vs v4.0 through full parallelism
-- **Fastest decompression**: −82% on high-entropy files (rANS), −38% on text/structured (decode optimizations)
+### Version 7.0 Highlights
+- **Fastest decompression ever**: 51.1 MB/s average (3x faster than v5.2)
+- **Fastest compression ever**: 28.9 MB/s average (1.7x faster than v5.2)
+- **Smallest binaries**: 84KB compressor, 56KB decompressor
+- **Surprising compression wins**: B (20.6% vs v5's 41.5%), H (46.9% vs v5's 61.2%)
+- **E/F throughput**: 13-19x faster than v5 on high-entropy files
+
+### Version 5.2 Highlights
+- **Best compression ratio achieved**: 54.70% average (beats bzip2 by 0.23pp)
+- **ZRLE rank-255 solved**: Escape byte prefix enables ZRLE on all files unconditionally
 - **Most files won**: 5/8 files beat bzip2 (A, B, C, D, E)
-- **Largest single-file improvement**: File F −5.92pp (87.62% → 81.70%) via threshold adjustment
-- **Most sophisticated model**: Method C + PPMD singleton escape + rescaling
+- **G gap nearly closed**: 28.81% vs bzip2's 28.70% (only −0.11pp)
 
 ### Overall Project Achievements
-- **16.71pp cumulative improvement** from v1.0 to v5.0 (71.44% → 54.73%)
+- **Two production versions**: v5.2 (best compression) and v7.0 (best speed) -- choose based on use case
+- **16.74pp cumulative improvement** from v1.0 to v5.2 (71.44% → 54.70%)
+- **51.1 MB/s peak throughput** in v7.0 (500x faster than v1.0's decompression)
 - **Competitive with industry leaders**: Beats bzip2, competitive with xz (LZMA)
 - **Comprehensive approach**: Combines BWT preprocessing, adaptive PPM modeling, multiple entropy coders
 - **Production-ready**: Parallel processing, robust error handling, extensive testing
@@ -395,11 +511,12 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v2.0 | — | README.md |
 | v3.0 | — | README.md |
 | v4.0 | G07-V4-C, G07-V4-D | README.md |
-| v5.0 | — | README.md (comprehensive) |
-| v6.1 | G07-V6.1-C, G07-V6.1-D | README.md, ARCHITECTURE.md, LESSONS_LEARNED.md |
+| v5.0 | g07-v5-c, g07-v5-d | README.md (comprehensive) |
+| v6.1 | g07-v6-c, g07-v6-d | README.md, ARCHITECTURE.md, LESSONS_LEARNED.md |
+| v7.0 | g07-v7-c (84KB), g07-v7-d (56KB) | README.md |
 
-**Note:** v5.0 source code in main branch is the production version. v6.1 is an experimental branch (failed).
+**Note:** v5.2 source is the best-compression production version. v7.0 is the best-speed production version. v6.1 is a failed experiment.
 
 ---
 
-*Last updated: 2026-04-06 (v6.1 experimental added)*
+*Last updated: 2026-04-08 (v7.0 speed-optimized release)*

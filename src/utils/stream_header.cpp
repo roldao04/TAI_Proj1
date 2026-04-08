@@ -262,6 +262,8 @@ std::string describe_model_type(const Header& header) {
             return "Parallel (per-block BWT+MTF+ZRLE+Order-1)";
         case ModelType::RANS_ORDER_0:
             return "rANS Order-0 (static)";
+        case ModelType::RANS_INTERLEAVED_BWT_MTF:
+            return "rANS Interleaved Order-0 with BWT+MTF (v7 speed)";
         case ModelType::UNCOMPRESSED:
             return "Uncompressed";
     }

@@ -55,6 +55,18 @@ public:
     std::vector<uint8_t> decode(const std::vector<uint8_t>& rans_stream,
                                  uint64_t original_size);
 
+    // ── 2-Way Interleaved (v7 speed path) ────────────────────────────────
+
+    // Encode using two alternating rANS states for ILP (~1.4x faster).
+    // Requires build_encode_table() to have been called first.
+    std::vector<uint8_t> encode_interleaved(const uint8_t* data, size_t len);
+
+    // Decode interleaved stream into pre-allocated output buffer.
+    // Requires build_decode_table() to have been called first.
+    // Returns number of bytes decoded.
+    size_t decode_interleaved(const uint8_t* rans_stream, size_t stream_len,
+                              uint8_t* output, size_t output_len);
+
 private:
     // Per-symbol encode info
     struct EncSym {

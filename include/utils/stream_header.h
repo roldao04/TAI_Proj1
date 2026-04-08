@@ -18,13 +18,17 @@ enum class ModelType : uint8_t {
     ORDER_1_PREPROC = 6,
     PARALLEL = 7,       // fully independent per-block pipeline (BWT+MTF+ZRLE+Order1 per block)
     RANS_ORDER_0 = 8,   // rANS (ryg) static Order-0 — zero-division decode
+    RANS_INTERLEAVED_BWT_MTF = 11, // v7: BWT + MTF + 2-way interleaved rANS Order-0 (speed)
     UNCOMPRESSED = 255
 };
 
 enum TransformFlag : uint8_t {
-    TRANSFORM_BWT = 1 << 0,
-    TRANSFORM_MTF = 1 << 1,
-    TRANSFORM_ZRLE = 1 << 2
+    TRANSFORM_BWT    = 1 << 0,
+    TRANSFORM_MTF    = 1 << 1,
+    TRANSFORM_ZRLE   = 1 << 2,
+    TRANSFORM_LZP    = 1 << 3,
+    TRANSFORM_WFC    = 1 << 4,  // WFC used instead of standard MTF
+    TRANSFORM_ORDER2 = 1 << 5   // Order-2 context model active
 };
 
 struct Header {

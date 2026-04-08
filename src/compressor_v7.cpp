@@ -10,25 +10,31 @@
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
 #include "transform/mtf.h"
+#include "transform/zero_rle.h"
 
 /*
  * v7.0 Speed-Optimized Lossless Compressor
  *
- * Pipeline: BWT (libsais, 4MB blocks) -> MTF -> 2-way Interleaved rANS Order-0
+ * Pipeline: BWT (libsais, 4MB blocks) -> MTF -> ZRLE (if beneficial) -> Interleaved rANS Order-0
  *
- * Designed for maximum throughput with >= 70% compression ratio.
- * No ZRLE, no Order-1, no model selection overhead.
+ * Designed for maximum throughput with good compression ratio.
  *
  * File format:
  *   [0x0B] [original_size:8B] [block_count:4B]
  *   Per block metadata: [bwt_index:4B] [orig_block_size:4B] [compressed_size:4B]
  *   Per block data:     [scale_bits:1B] [scaled_freq:257x2B] [rANS stream:variable]
+ *
+ * bwt_index encoding:
+ *   0xFFFFFFFF          = no BWT/MTF/ZRLE (raw rANS)
+ *   bit 30 set (0x40000000) = ZRLE applied; bits 0-29 = BWT primary index
+ *   otherwise           = BWT+MTF only; value = BWT primary index
  */
 
 using StreamHeader::ModelType;
 
 static constexpr size_t BLOCK_SIZE = 4 * 1024 * 1024;  // 4MB blocks
 static constexpr uint32_t NO_BWT_SENTINEL = 0xFFFFFFFF; // sentinel: no BWT/MTF applied
+static constexpr uint32_t ZRLE_FLAG = 0x40000000;       // bit 30: ZRLE was applied
 
 struct BlockResult {
     uint32_t bwt_primary_index;  // NO_BWT_SENTINEL if raw rANS (no BWT/MTF)
@@ -113,13 +119,24 @@ int main(int argc, char* argv[]) {
             size_t encode_len = block.size();
             std::vector<uint8_t> bwt_data, mtf_data;
 
+            std::vector<uint8_t> zrle_data;
+
             if (use_bwt) {
                 auto [bwt_out, bwt_idx] = BWT::transform(block);
                 bwt_data = std::move(bwt_out);
                 primary_index = bwt_idx;
                 mtf_data = MoveToFront::transform(bwt_data);
-                data_to_encode = mtf_data.data();
-                encode_len = mtf_data.size();
+
+                // Try ZRLE: apply only if it actually shrinks the data
+                zrle_data = ZeroRunLengthEncoder::encode(mtf_data);
+                if (zrle_data.size() < mtf_data.size()) {
+                    primary_index |= ZRLE_FLAG;
+                    data_to_encode = zrle_data.data();
+                    encode_len = zrle_data.size();
+                } else {
+                    data_to_encode = mtf_data.data();
+                    encode_len = mtf_data.size();
+                }
             }
 
             // Count frequencies

@@ -7,21 +7,23 @@
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
 #include "transform/mtf.h"
+#include "transform/zero_rle.h"
 
 /*
  * v7.0 Speed-Optimized Lossless Decompressor
  *
- * Reverses: 2-way Interleaved rANS Order-0 -> inverse MTF -> inverse BWT
+ * Reverses: Interleaved rANS -> [ZRLE inverse ->] inverse MTF -> inverse BWT
  *
- * File format:
- *   [0x0B] [original_size:8B] [block_count:4B]
- *   Per block metadata: [bwt_index:4B] [orig_block_size:4B] [compressed_size:4B]
- *   Per block data:     [scale_bits:1B] [scaled_freq:257x2B] [rANS stream:variable]
+ * bwt_index encoding:
+ *   0xFFFFFFFF          = no BWT/MTF/ZRLE (raw rANS)
+ *   bit 30 set (0x40000000) = ZRLE applied; bits 0-29 = BWT primary index
+ *   otherwise           = BWT+MTF only; value = BWT primary index
  */
 
 using StreamHeader::ModelType;
 
 static constexpr uint32_t NO_BWT_SENTINEL = 0xFFFFFFFF;
+static constexpr uint32_t ZRLE_FLAG = 0x40000000;
 
 struct BlockMeta {
     uint32_t bwt_primary_index;  // NO_BWT_SENTINEL = no BWT/MTF

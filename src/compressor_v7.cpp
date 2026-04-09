@@ -10,8 +10,6 @@
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
 #include "transform/mtf.h"
-#include "transform/zero_rle.h"
-
 /*
  * v7.0 Speed-Optimized Lossless Compressor
  *

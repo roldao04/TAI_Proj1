@@ -30,9 +30,14 @@ mkdir -p "$TEMP_DIR"
 # Auto-detect available G07 versions
 echo "Detecting G07 versions..."
 G07_VERSIONS=()
+SKIP_VERSIONS="6"  # v6 is broken — skip it
 for bin in bin/g07-v*-c; do
     if [ -f "$bin" ]; then
         version=$(basename "$bin" | sed 's/g07-v\(.*\)-c/\1/')
+        if echo "$SKIP_VERSIONS" | grep -qw "$version"; then
+            echo "  Skipping: g07-v${version} (excluded)"
+            continue
+        fi
         G07_VERSIONS+=("$version")
         echo "  Found: g07-v${version}"
     fi

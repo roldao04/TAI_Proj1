@@ -15,8 +15,8 @@
 
 class BitArithmeticEncoder {
 private:
-    uint64_t low;                    // Lower bound of current range
-    uint64_t high;                   // Upper bound of current range
+    uint64_t low;                    // Lower bound of current range (64-bit for better precision)
+    uint64_t high;                   // Upper bound of current range (64-bit for better precision)
     std::vector<uint8_t>& output;    // Output buffer
     uint64_t pending_bits;           // Bits waiting to be output (for carry handling)
 
@@ -46,9 +46,9 @@ public:
 
 class BitArithmeticDecoder {
 private:
-    uint64_t low;                          // Lower bound of current range
-    uint64_t high;                         // Upper bound of current range
-    uint64_t value;                        // Current value within range
+    uint64_t low;                          // Lower bound of current range (64-bit for better precision)
+    uint64_t high;                         // Upper bound of current range (64-bit for better precision)
+    uint64_t value;                        // Current value within range (64-bit for better precision)
     const std::vector<uint8_t>& input;     // Input buffer
     size_t input_pos;                      // Current position in input
 

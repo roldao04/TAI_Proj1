@@ -17,6 +17,7 @@ BIN = bin
 # ============================================
 SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o \
          $(OBJ)/range_coder.o $(OBJ)/rans_static.o \
+         $(OBJ)/bit_arithmetic_coder.o \
          $(OBJ)/file_io.o $(OBJ)/entropy_calculator.o \
          $(OBJ)/stream_header.o $(OBJ)/libsais.o
 
@@ -30,8 +31,8 @@ V5_MODELS = $(OBJ)/frequency_model.o $(OBJ)/context_model.o
 V6_MODELS = $(V5_MODELS) $(OBJ)/multi_order_ppm.o \
             $(OBJ)/context_mixer.o $(OBJ)/prediction_utils.o
 
-# v7+ models (when implemented)
-V7_MODELS = $(V6_MODELS)
+# v7 specific models (v6 + bit-level PPM)
+V7_MODELS = $(V6_MODELS) $(OBJ)/bit_ppm.o
 
 # ============================================
 # AUTO-DETECT AVAILABLE VERSIONS
@@ -119,6 +120,10 @@ $(OBJ)/rans_static.o: $(SRC)/arithmetic/rans_static.cpp | $(OBJ)
 	@echo "Compiling rans_static.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(OBJ)/bit_arithmetic_coder.o: $(SRC)/arithmetic/bit_arithmetic_coder.cpp | $(OBJ)
+	@echo "Compiling bit_arithmetic_coder.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
 # Shared models
 $(OBJ)/frequency_model.o: $(SRC)/model/frequency_model.cpp | $(OBJ)
 	@echo "Compiling frequency_model.cpp..."
@@ -138,6 +143,10 @@ $(OBJ)/context_mixer.o: $(SRC)/model/context_mixer.cpp | $(OBJ)
 
 $(OBJ)/prediction_utils.o: $(SRC)/model/prediction_utils.cpp | $(OBJ)
 	@echo "Compiling prediction_utils.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/bit_ppm.o: $(SRC)/model/bit_ppm.cpp | $(OBJ)
+	@echo "Compiling bit_ppm.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Shared utilities

@@ -102,8 +102,9 @@ void ContextMixer::update(const std::vector<Prediction>& predictions, bool actua
 
             weights_fixed[i] += update;
 
-            // Keep weights positive (minimum 0.001 in fixed-point = 65)
-            weights_fixed[i] = std::max((int64_t)65, weights_fixed[i]);
+            // Keep weights in valid range: [0.001, 3.0]
+            weights_fixed[i] = std::max((int64_t)65, weights_fixed[i]);  // Min 0.001
+            weights_fixed[i] = std::min((int64_t)(3 * PredictionUtils::FIXED_POINT_SCALE), weights_fixed[i]);  // Max 3.0
 
             // Track which models are contributing
             if (std::abs(update) > 10) {  // Threshold adjusted for fixed-point
@@ -114,7 +115,7 @@ void ContextMixer::update(const std::vector<Prediction>& predictions, bool actua
 
     // Periodically normalize weights to prevent overflow
     total_updates++;
-    if (total_updates % 10000 == 0) {
+    if (total_updates % 1000 == 0) {  // More frequent normalization for better balance
         normalize_weights();
     }
 }

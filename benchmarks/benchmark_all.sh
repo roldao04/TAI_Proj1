@@ -13,8 +13,8 @@ RESULTS_CSV="benchmarks/results.csv"
 RESULTS_MD="benchmarks/results.md"
 
 # Timeout configuration (seconds)
-COMPRESS_TIMEOUT=60    # Maximum time for compression
-DECOMPRESS_TIMEOUT=30  # Maximum time for decompression
+COMPRESS_TIMEOUT=300   # 5 minutes (v6/v7 are 10-100× slower than v5)
+DECOMPRESS_TIMEOUT=120 # 2 minutes (decompression is faster)
 
 # Colors
 BOLD='\033[1m'
@@ -175,8 +175,16 @@ for file in "$DATA_DIR"/*; do
     # Test all detected G07 versions
     for version in "${G07_VERSIONS[@]}"; do
         echo -n "  Testing g07-v${version}... "
+
+        # v5 doesn't support flags, v6+ needs -y to skip prompts
+        if [ "$version" = "5" ]; then
+            compress_flags=""
+        else
+            compress_flags="-y"
+        fi
+
         if benchmark_file_tool "$file" "$basename" "g07-v${version}" \
-            "./bin/g07-v${version}-c '$file' '$TEMP_DIR/${basename}.g07-v${version}'" \
+            "./bin/g07-v${version}-c '$file' '$TEMP_DIR/${basename}.g07-v${version}' $compress_flags" \
             "./bin/g07-v${version}-d '$TEMP_DIR/${basename}.g07-v${version}' '$TEMP_DIR/${basename}.g07-v${version}.decompressed'" \
             "$TEMP_DIR/${basename}.g07-v${version}" \
             "$original_size"; then

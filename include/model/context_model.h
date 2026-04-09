@@ -69,6 +69,26 @@ private:
     uint32_t singleton1_[256]; // symbols with freq == 1 (PPMD escape estimator)
     bool     ctx_exists_[256]; // has this context been initialised?
 
+    // ── Order-2 (hashed, heap-allocated) ────────────────────────────────
+    static const int O2_HASH_BITS = 12;
+    static const int O2_HASH_SIZE = 1 << O2_HASH_BITS;  // 4096
+    static const uint32_t O2_WARMUP_SIZE = 3000;  // symbols before O2 activates
+
+    bool     use_order2_;
+    uint8_t  prev_prev_byte_;
+    bool     has_prev_prev_;
+    uint32_t o2_symbols_seen_;  // warmup counter: O2 inactive until >= O2_WARMUP_SIZE
+
+    std::vector<uint32_t> freq2_data_;   // O2_HASH_SIZE * EXTENDED_ALPHABET
+    std::vector<uint32_t> total2_;       // O2_HASH_SIZE
+    std::vector<uint32_t> singleton2_;   // O2_HASH_SIZE
+    std::vector<bool>     ctx2_exists_;  // O2_HASH_SIZE
+
+    uint16_t order2_hash() const;
+    uint32_t*       freq2_ptr(uint16_t hash);
+    const uint32_t* freq2_ptr(uint16_t hash) const;
+    void rescale_order2(uint16_t hash);
+
     // ── History ───────────────────────────────────────────────────────────
     uint8_t  prev_byte_;
     bool     has_prev_;
@@ -86,6 +106,8 @@ public:
     void set_encoding_method_simple() { encoding_method_ = EncodingMethod::SIMPLE; }
     void set_encoding_method_ppm_c()  { encoding_method_ = EncodingMethod::METHOD_C; }
     bool is_using_exclusions() const  { return encoding_method_ == EncodingMethod::METHOD_C; }
+
+    void enable_order2();
 
     void build_from_data(const std::vector<uint8_t>& data);
     void init_adaptive();
@@ -124,8 +146,19 @@ public:
 
     // Fast inline accessors used by the hot decode loop
     bool     has_order1_context()  const { return has_prev_ && ctx_exists_[prev_byte_]; }
+    bool     has_order2_context()  const;
     uint32_t get_order0_total()    const { return total0_; }
     uint32_t get_order1_total()    const { return total1_[prev_byte_]; }
+    uint32_t get_order2_total()    const;
+
+    // Order-2 decode helper
+    int find_symbol_and_get_range_o2(uint32_t target,
+                                     uint32_t& lo, uint32_t& hi, uint32_t& total) const;
+
+    // Order-2 encode helpers: get range for a specific byte, or for escape
+    // Returns false if byte is not in the O2 context (caller should escape)
+    bool get_o2_byte_range(uint8_t byte, uint32_t& lo, uint32_t& hi, uint32_t& total) const;
+    void get_o2_escape_range(uint32_t& lo, uint32_t& hi, uint32_t& total) const;
 
     // Method C: exclusion-based helpers (no heap allocation)
     // Returns pointer to current Order-1 context freq array (valid while prev_byte_ unchanged)
@@ -133,6 +166,10 @@ public:
     uint32_t get_order0_total_excl_ctx(const uint32_t* ctx_freq) const;
     // Fused find+range for Order-0 excluding symbols seen in ctx_freq
     int find_symbol_and_get_range_excl_ctx(uint32_t target, const uint32_t* ctx_freq,
+                                           uint32_t& lo, uint32_t& hi, uint32_t& total) const;
+    // Overload: accepts pre-computed excluded total to skip redundant 258-element scan
+    int find_symbol_and_get_range_excl_ctx(uint32_t target, const uint32_t* ctx_freq,
+                                           uint32_t precomputed_total,
                                            uint32_t& lo, uint32_t& hi, uint32_t& total) const;
 
     bool     has_symbol_in_context(int order, int symbol) const;

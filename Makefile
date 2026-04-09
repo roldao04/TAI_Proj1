@@ -15,7 +15,7 @@ BIN = bin
 # ============================================
 # SHARED OBJECTS (all versions)
 # ============================================
-SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o \
+SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o $(OBJ)/lzp.o \
          $(OBJ)/range_coder.o $(OBJ)/rans_static.o \
          $(OBJ)/bit_arithmetic_coder.o \
          $(OBJ)/file_io.o $(OBJ)/entropy_calculator.o \
@@ -109,6 +109,10 @@ $(OBJ)/mtf.o: $(SRC)/transform/mtf.cpp | $(OBJ)
 
 $(OBJ)/zero_rle.o: $(SRC)/transform/zero_rle.cpp | $(OBJ)
 	@echo "Compiling zero_rle.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/lzp.o: $(SRC)/transform/lzp.cpp | $(OBJ)
+	@echo "Compiling lzp.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Shared arithmetic coders
@@ -208,4 +212,31 @@ benchmark: all
 	@echo "Running benchmarks..."
 	@bash benchmarks/benchmark_all.sh
 
-.PHONY: all clean check-sizes test benchmark $(foreach v,$(VERSIONS),v$(v))
+# ============================================
+# PROFILE-GUIDED OPTIMIZATION
+# ============================================
+PGO_DIR = pgo_profiles
+
+pgo: clean
+	@echo "=== PGO Phase 1: Instrumented build ==="
+	@mkdir -p $(OBJ) $(BIN) $(PGO_DIR)
+	@$(MAKE) --no-print-directory CXXFLAGS="$(CXXFLAGS) -fprofile-generate=$(PGO_DIR)" \
+	         CFLAGS="$(CFLAGS) -fprofile-generate=$(PGO_DIR)" \
+	         LDFLAGS="$(LDFLAGS) -fprofile-generate=$(PGO_DIR)" v5
+	@echo "=== PGO Phase 2: Training run ==="
+	@for f in data/*; do \
+		echo "  Training on $$f..."; \
+		./bin/g07-v5-c "$$f" /tmp/pgo_compressed.tmp 2>/dev/null; \
+		./bin/g07-v5-d /tmp/pgo_compressed.tmp /tmp/pgo_decompressed.tmp 2>/dev/null; \
+		rm -f /tmp/pgo_compressed.tmp /tmp/pgo_decompressed.tmp; \
+	done
+	@echo "=== PGO Phase 3: Optimized rebuild ==="
+	@rm -rf $(OBJ) $(BIN)
+	@mkdir -p $(OBJ) $(BIN)
+	@$(MAKE) --no-print-directory CXXFLAGS="$(CXXFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction" \
+	         CFLAGS="$(CFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction" \
+	         LDFLAGS="$(LDFLAGS) -fprofile-use=$(PGO_DIR)" v5
+	@rm -rf $(PGO_DIR)
+	@echo "=== PGO build complete ==="
+
+.PHONY: all clean check-sizes test benchmark pgo $(foreach v,$(VERSIONS),v$(v))

@@ -57,10 +57,12 @@ make
 ```
 
 This creates:
-- `bin/g07-v5-c` - Compression tool (v5.0)
+- `bin/g07-v5-c` - Compression tool (v5.0 - best compression ratio)
 - `bin/g07-v5-d` - Decompression tool (v5.0)
 - `bin/g07-v6-c` - Compression tool (v6.0) if v6 exists
 - `bin/g07-v6-d` - Decompression tool (v6.0) if v6 exists
+- `bin/g07-v7-c` - Compression tool (v7.0 - speed-optimized)
+- `bin/g07-v7-d` - Decompression tool (v7.0)
 
 To clean build artifacts:
 
@@ -74,32 +76,44 @@ make clean
 
 ### Compression
 
+Two production versions are available — choose based on your priority:
+
+**v5.0 — Best Compression Ratio (54.70% avg)**
 ```bash
 ./bin/g07-v5-c <input_file> <output_file>
 ```
+- BWT + MTF + ZRLE + Order-1 adaptive PPM + Range Coder
+- Beats bzip2 on 5/8 files; competitive with xz
+
+**v7.0 — Maximum Speed (28.9 MB/s compress, 51.1 MB/s decompress)**
+```bash
+./bin/g07-v7-c <input_file> <output_file>
+```
+- BWT + MTF + 2-Way Interleaved rANS Order-0
+- 1.7x faster compression, 3x faster decompression vs v5
+- 59.2% avg ratio (still well under 70% target)
+- On high-entropy files: up to 13x faster than v5
 
 **Example:**
 ```bash
-./bin/g07-v5-c data/A data/A.compressed
+./bin/g07-v5-c data/A data/A.compressed   # best ratio
+./bin/g07-v7-c data/A data/A.fast         # best speed
 ```
-
-**Note:** v5.0 uses hardcoded optimal settings. No flags needed.
-- Auto-selects model (Order-0 vs Order-1 based on entropy)
-- Auto-enables BWT when entropy < 6.5 and file size > 10KB
-- Auto-enables MTF + ZRLE when beneficial
 
 ### Decompression
 
 ```bash
-./bin/g07-v5-d <compressed_file> <output_file>
+./bin/g07-v5-d <compressed_file> <output_file>   # for v5 files
+./bin/g07-v7-d <compressed_file> <output_file>   # for v7 files
 ```
+
+Each decompressor auto-detects the format used during compression. v5 files cannot be decompressed by v7-d and vice versa (each prints a clear error if the wrong tool is used).
 
 **Example:**
 ```bash
 ./bin/g07-v5-d data/A.compressed data/A.decompressed
+./bin/g07-v7-d data/A.fast       data/A.decompressed
 ```
-
-**Note:** Decompression automatically detects which model and transforms were used during compression.
 
 ---
 
@@ -242,11 +256,17 @@ Features:
 - **Memory**: Uses ~1-2GB (requirement compliant)
 - **Optimization**: Compiled with `-O3 -march=native -flto=auto` for maximum performance
 - **Platform**: Tested on Linux
-- **Average Compression Ratio**: **54.73%** (v5.0)
-  - Beats bzip2 by 0.20pp
-  - Competitive ranking with industry tools
-- **Speed**: ~25 MB/s compression speed
 - **Binary Size**: < 120KB per binary (well under 1MB requirement)
+
+### Two Production Versions
+
+| Metric | v5 (Best Compression) | v7 (Best Speed) |
+|--------|----------------------|-----------------|
+| **Avg Compression Ratio** | **54.73%** | 59.2% |
+| **Compress Speed** | ~25 MB/s | **28.9 MB/s** |
+| **Decompress Speed** | ~17 MB/s | **51.1 MB/s** |
+| **Pipeline** | BWT+MTF+ZRLE+Order-1+Range | BWT+MTF+Interleaved rANS |
+| **Best For** | Archival, max compression | Real-time, throughput |
 
 ---
 
@@ -254,40 +274,33 @@ Features:
 
 See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history.
 
-**Current Version**: 5.0 (April 2026)
-- Simplified CLI (no flags needed - hardcoded optimal settings)
-- Auto-selection for model, BWT, MTF, ZRLE
-- BWT preprocessing (block-based, 900KB blocks)
-- Multi-model system (Order-0 + Order-1)
-- Range coding (faster than arithmetic)
-- **54.73% average compression ratio**
-- **~25 MB/s compression speed**
+**v7.0 (April 2026) - Speed-Optimized**
+- BWT + MTF + 2-way interleaved rANS Order-0
+- **59.2% avg compression ratio** at **51.1 MB/s decompression** (3x faster than v5)
+- Adaptive: BWT+MTF for low-entropy, raw rANS for high-entropy, uncompressed for random
+- Smallest binaries: 84KB compressor, 56KB decompressor
+
+**v5.0 (March 2026) - Compression-Optimized**
+- BWT + MTF + ZRLE + Order-1 adaptive PPM + Range Coding
+- **54.73% avg compression ratio** (beats bzip2 by 0.20pp)
+- Full pipeline parallelism, ~25 MB/s compression speed
 
 **Previous Versions**:
-- **v4.0**: Advanced model improvements
+- **v4.0**: Flat array context model + libsais + parallel BWT - 56.39% ratio
 - **v3.0**: BWT preprocessing introduced - 57.48% ratio
 - **v2.0**: Multi-model + Range coding - 62.74% ratio
 - **v1.0**: Order-0 + Arithmetic coding - 71.44% ratio
 
 ---
 
-## Future Improvements
-
-Potential enhancements (see [roadmap.md](roadmap.md) for detailed plans):
-1. **Variable BWT Block Size**: Adaptive block size selection (1KB - 4KB)
-2. **Parallel BWT Processing**: Multi-threaded block processing
-3. **Order-1 Model Optimization**: Replace `std::map` contexts with denser structures
-4. **Better Escape Handling**: Improve Order-1 fallback and exclusion heuristics
-5. **Streaming Mode**: Support for files larger than RAM
-
-**Note**: Order-2 model was tested and removed after benchmarks showed no benefit over Order-1.
-
----
-
 ## Attribution
 
 - Range coding implementation: Based on Michael Schindler's range coder (GPL v2+)
+- rANS implementation: Based on Fabian Giesen's ryg_rans (Public Domain)
+- Interleaved rANS: Inspired by Giesen, "Interleaved entropy coders" (arXiv:1402.3392)
+- ANS theory: Jarek Duda, "Asymmetric numeral systems" (arXiv:1311.2540)
 - BWT implementation: Original work by project team (based on Burrows-Wheeler 1994 paper)
+- libsais: Ilya Grebnov, linear-time suffix array construction
 - Order-0 model implementation: Original work by project team
 - Order-1 adaptive PPM model: Original work by project team
 - Auto-selection algorithms: Original work by project team

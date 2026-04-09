@@ -194,6 +194,7 @@ Header parse_header(const std::vector<uint8_t>& data) {
                header.model_type != ModelType::ORDER_1 &&
                header.model_type != ModelType::ORDER_2 &&
                header.model_type != ModelType::RANS_ORDER_0 &&
+               header.model_type != ModelType::LZ77_FAST &&
                header.model_type != ModelType::UNCOMPRESSED) {
         throw std::runtime_error("Unknown model type");
     }
@@ -262,6 +263,10 @@ std::string describe_model_type(const Header& header) {
             return "Parallel (per-block BWT+MTF+ZRLE+Order-1)";
         case ModelType::RANS_ORDER_0:
             return "rANS Order-0 (static)";
+        case ModelType::RANS_INTERLEAVED_BWT_MTF:
+            return "rANS Interleaved Order-0 with BWT+MTF (v7 speed)";
+        case ModelType::LZ77_FAST:
+            return "LZ77 Ultra-Fast (v8 speed)";
         case ModelType::UNCOMPRESSED:
             return "Uncompressed";
     }

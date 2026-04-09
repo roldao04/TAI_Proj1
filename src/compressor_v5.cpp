@@ -184,9 +184,7 @@ int main(int argc, char* argv[]) {
                     std::vector<uint8_t> mtf_data  = MoveToFront::transform(bwt_data);
 
                     std::vector<uint8_t> zrle_data = ZeroRunLengthEncoder::encode(mtf_data);
-                    bool has_rank255 = std::any_of(mtf_data.begin(), mtf_data.end(),
-                                                   [](uint8_t b){ return b == 255; });
-                    bool use_zrle_this = !has_rank255 && (zrle_preference != -1) &&
+                    bool use_zrle_this = (zrle_preference != -1) &&
                                         (zrle_preference == 1 || zrle_data.size() < mtf_data.size());
                     const std::vector<uint8_t>& to_encode = use_zrle_this ? zrle_data : mtf_data;
 

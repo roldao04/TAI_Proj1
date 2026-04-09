@@ -11,6 +11,10 @@
 ContextModel::ContextModel()
     : encoding_method_(EncodingMethod::SIMPLE),
       total0_(0),
+      use_order2_(false),
+      prev_prev_byte_(0),
+      has_prev_prev_(false),
+      o2_symbols_seen_(0),
       prev_byte_(0),
       has_prev_(false)
 {
@@ -24,6 +28,102 @@ ContextModel::ContextModel()
 
 void ContextModel::reset() {
     has_prev_ = false;
+    has_prev_prev_ = false;
+    o2_symbols_seen_ = 0;
+}
+
+// ============================================================================
+// Order-2: enable, hash, pointer helpers, rescale
+// ============================================================================
+
+void ContextModel::enable_order2() {
+    use_order2_ = true;
+    freq2_data_.assign(O2_HASH_SIZE * EXTENDED_ALPHABET, 0);
+    total2_.assign(O2_HASH_SIZE, 0);
+    singleton2_.assign(O2_HASH_SIZE, 0);
+    ctx2_exists_.assign(O2_HASH_SIZE, false);
+    has_prev_prev_ = false;
+    prev_prev_byte_ = 0;
+}
+
+uint16_t ContextModel::order2_hash() const {
+    uint16_t key = ((uint16_t)prev_prev_byte_ << 8) | prev_byte_;
+    return (uint16_t)(key * 40503u) >> (16 - O2_HASH_BITS);
+}
+
+uint32_t* ContextModel::freq2_ptr(uint16_t hash) {
+    return &freq2_data_[hash * EXTENDED_ALPHABET];
+}
+
+const uint32_t* ContextModel::freq2_ptr(uint16_t hash) const {
+    return &freq2_data_[hash * EXTENDED_ALPHABET];
+}
+
+bool ContextModel::has_order2_context() const {
+    if (!use_order2_ || !has_prev_prev_ || !has_prev_) return false;
+    if (o2_symbols_seen_ < O2_WARMUP_SIZE) return false;
+    return ctx2_exists_[order2_hash()];
+}
+
+uint32_t ContextModel::get_order2_total() const {
+    return total2_[order2_hash()];
+}
+
+void ContextModel::rescale_order2(uint16_t hash) {
+    uint32_t* f = freq2_ptr(hash);
+    total2_[hash]     = 0;
+    singleton2_[hash] = 0;
+    for (int s = 0; s < 256; s++) {
+        if (f[s] > 0) {
+            f[s] = (f[s] + 1) >> 1;
+            if (f[s] == 1) singleton2_[hash]++;
+            total2_[hash] += f[s];
+        }
+    }
+    f[256] = std::max(1u, singleton2_[hash]);
+    total2_[hash] += f[256];
+}
+
+int ContextModel::find_symbol_and_get_range_o2(uint32_t target,
+                                                uint32_t& lo, uint32_t& hi,
+                                                uint32_t& total) const {
+    uint16_t hash = order2_hash();
+    const uint32_t* f = freq2_ptr(hash);
+    total = total2_[hash];
+    uint32_t cum = 0;
+    for (int s = 0; s < 257; s++) {
+        uint32_t fs = f[s];
+        if (fs) {
+            uint32_t next = cum + fs;
+            if (next > target) {
+                lo = cum;
+                hi = next;
+                return s;
+            }
+            cum = next;
+        }
+    }
+    return -1;
+}
+
+bool ContextModel::get_o2_byte_range(uint8_t byte, uint32_t& lo, uint32_t& hi, uint32_t& total) const {
+    uint16_t hash = order2_hash();
+    const uint32_t* f2 = freq2_ptr(hash);
+    if (!f2[byte]) return false;
+    total = total2_[hash];
+    uint32_t cum = 0;
+    for (int s = 0; s < byte; s++) cum += f2[s];
+    lo = cum;
+    hi = cum + f2[byte];
+    return true;
+}
+
+void ContextModel::get_o2_escape_range(uint32_t& lo, uint32_t& hi, uint32_t& total) const {
+    uint16_t hash = order2_hash();
+    const uint32_t* f2 = freq2_ptr(hash);
+    total = total2_[hash];
+    lo    = total - f2[ESCAPE_SYMBOL];
+    hi    = total;
 }
 
 // ============================================================================
@@ -31,7 +131,7 @@ void ContextModel::reset() {
 // ============================================================================
 
 void ContextModel::init_adaptive() {
-    // Order-0: all 256 bytes + EOF initialised to freq 1 (matches original)
+    // Order-0: all 256 bytes + EOF initialised to freq 1
     for (int i = 0; i < 256; i++) freq0_[i] = 1;
     freq0_[256] = 0;   // escape never in order-0
     freq0_[257] = 1;   // EOF
@@ -44,6 +144,16 @@ void ContextModel::init_adaptive() {
     std::memset(singleton1_, 0, sizeof(singleton1_));
     std::memset(ctx_exists_, 0, sizeof(ctx_exists_));
     has_prev_ = false;
+    has_prev_prev_ = false;
+    o2_symbols_seen_ = 0;
+
+    // Order-2: clear if enabled
+    if (use_order2_) {
+        std::fill(freq2_data_.begin(), freq2_data_.end(), 0);
+        std::fill(total2_.begin(), total2_.end(), 0);
+        std::fill(singleton2_.begin(), singleton2_.end(), 0);
+        std::fill(ctx2_exists_.begin(), ctx2_exists_.end(), false);
+    }
 }
 
 void ContextModel::init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size) {
@@ -75,6 +185,11 @@ void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
 // ============================================================================
 
 void ContextModel::update_history(uint8_t byte) {
+    if (use_order2_) {
+        prev_prev_byte_ = prev_byte_;
+        has_prev_prev_  = has_prev_;
+        o2_symbols_seen_++;
+    }
     prev_byte_ = byte;
     has_prev_  = true;
 }
@@ -132,6 +247,44 @@ void ContextModel::update_frequencies(uint8_t byte) {
     }
 
     if (total1_[ctx] > RESCALE_THRESH) { rescale_context(ctx); }
+
+    // ── Order-2 update ───────────────────────────────────────────────────
+    if (!use_order2_ || !has_prev_prev_) return;
+
+    uint16_t hash = order2_hash();
+    uint32_t* f2 = freq2_ptr(hash);
+
+    if (!ctx2_exists_[hash]) {
+        ctx2_exists_[hash]  = true;
+        f2[byte]            = 1;
+        f2[256]             = 1;   // escape
+        singleton2_[hash]   = 1;
+        total2_[hash]       = 2;
+        return;
+    }
+
+    if (f2[byte] == 0) {
+        uint32_t old_esc = std::max(1u, singleton2_[hash]);
+        singleton2_[hash]++;
+        uint32_t new_esc = std::max(1u, singleton2_[hash]);
+        f2[byte]  = 1;
+        f2[256]   = new_esc;
+        total2_[hash] += 1 + (new_esc - old_esc);
+    } else {
+        if (f2[byte] == 1) {
+            uint32_t old_esc = std::max(1u, singleton2_[hash]);
+            if (singleton2_[hash] > 0) singleton2_[hash]--;
+            uint32_t new_esc = std::max(1u, singleton2_[hash]);
+            f2[byte]++;
+            f2[256]   = new_esc;
+            total2_[hash] += 1 + (int32_t)(new_esc - old_esc);
+        } else {
+            f2[byte]++;
+            total2_[hash]++;
+        }
+    }
+
+    if (total2_[hash] > RESCALE_THRESH) { rescale_order2(hash); }
 }
 
 // ============================================================================
@@ -226,10 +379,17 @@ void ContextModel::get_symbol_range(int order, int symbol,
     } else {
         // order == 1
         const uint32_t* f = freq1_[prev_byte_];
+        total = total1_[prev_byte_];
+        // Fast path: escape symbol (256) is always last non-zero symbol in order-1.
+        // Its cumulative = total - f[ESCAPE_SYMBOL], avoiding O(256) prefix sum.
+        if (symbol == ESCAPE_SYMBOL) {
+            low  = total - f[ESCAPE_SYMBOL];
+            high = total;
+            return;
+        }
         uint32_t cum = cumulative_before(f, symbol);
         low   = cum;
         high  = cum + f[symbol];
-        total = total1_[prev_byte_];
     }
 }
 
@@ -320,20 +480,25 @@ ContextModel::EncodeResult ContextModel::encode_symbol_fast(uint8_t byte) {
         // Order-0 encode — use exclusions when METHOD_C and escaping from order-1
         const int idx = res.count;
         if (idx == 1 && encoding_method_ == EncodingMethod::METHOD_C) {
+            // Fused single-pass: compute total AND find symbol simultaneously
             const uint32_t* ctx_freq = freq1_[prev_byte_];
-            uint32_t cum = 0, tot = 0;
-            for (int s = 0; s < 258; s++) {
-                if (!ctx_freq[s]) tot += freq0_[s];
-            }
+            uint32_t cum = 0, tot = 0, sym_freq = 0;
+            bool found = false;
             for (int s = 0; s < 258; s++) {
                 if (ctx_freq[s]) continue;
+                uint32_t f = freq0_[s];
+                tot += f;
                 if (s == byte) {
-                    res.steps[idx].cum_freq_low  = cum;
-                    res.steps[idx].cum_freq_high = cum + freq0_[s];
-                    res.steps[idx].total_freq    = tot;
-                    break;
+                    res.steps[idx].cum_freq_low = cum;
+                    sym_freq = f;
+                    found = true;
+                } else if (!found) {
+                    cum += f;
                 }
-                cum += freq0_[s];
+            }
+            if (found) {
+                res.steps[idx].cum_freq_high = res.steps[idx].cum_freq_low + sym_freq;
+                res.steps[idx].total_freq    = tot;
             }
         } else {
             get_symbol_range(0, byte,
@@ -519,6 +684,29 @@ int ContextModel::find_symbol_and_get_range_excl_ctx(uint32_t target,
         if (!ctx_freq[s]) tot += freq0_[s];
     }
     total = tot;
+    uint32_t cum = 0;
+    for (int s = 0; s < 258; s++) {
+        if (ctx_freq[s]) continue;
+        uint32_t f = freq0_[s];
+        if (f) {
+            uint32_t next = cum + f;
+            if (next > target) {
+                lo = cum;
+                hi = next;
+                return s;
+            }
+            cum = next;
+        }
+    }
+    return -1;
+}
+
+int ContextModel::find_symbol_and_get_range_excl_ctx(uint32_t target,
+                                                      const uint32_t* ctx_freq,
+                                                      uint32_t precomputed_total,
+                                                      uint32_t& lo, uint32_t& hi,
+                                                      uint32_t& total) const {
+    total = precomputed_total;
     uint32_t cum = 0;
     for (int s = 0; s < 258; s++) {
         if (ctx_freq[s]) continue;

@@ -7,7 +7,6 @@
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
 #include "transform/mtf.h"
-#include "transform/zero_rle.h"
 
 /*
  * v7.0 Speed-Optimized Lossless Decompressor
@@ -23,8 +22,6 @@
 using StreamHeader::ModelType;
 
 static constexpr uint32_t NO_BWT_SENTINEL = 0xFFFFFFFF;
-static constexpr uint32_t ZRLE_FLAG = 0x40000000;
-
 struct BlockMeta {
     uint32_t bwt_primary_index;  // NO_BWT_SENTINEL = no BWT/MTF
     uint32_t original_block_size;

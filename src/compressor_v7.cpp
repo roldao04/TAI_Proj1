@@ -32,7 +32,6 @@ using StreamHeader::ModelType;
 
 static constexpr size_t BLOCK_SIZE = 4 * 1024 * 1024;  // 4MB blocks
 static constexpr uint32_t NO_BWT_SENTINEL = 0xFFFFFFFF; // sentinel: no BWT/MTF applied
-static constexpr uint32_t ZRLE_FLAG = 0x40000000;       // bit 30: ZRLE was applied
 
 struct BlockResult {
     uint32_t bwt_primary_index;  // NO_BWT_SENTINEL if raw rANS (no BWT/MTF)
@@ -117,24 +116,13 @@ int main(int argc, char* argv[]) {
             size_t encode_len = block.size();
             std::vector<uint8_t> bwt_data, mtf_data;
 
-            std::vector<uint8_t> zrle_data;
-
             if (use_bwt) {
                 auto [bwt_out, bwt_idx] = BWT::transform(block);
                 bwt_data = std::move(bwt_out);
                 primary_index = bwt_idx;
                 mtf_data = MoveToFront::transform(bwt_data);
-
-                // Try ZRLE: apply only if it actually shrinks the data
-                zrle_data = ZeroRunLengthEncoder::encode(mtf_data);
-                if (zrle_data.size() < mtf_data.size()) {
-                    primary_index |= ZRLE_FLAG;
-                    data_to_encode = zrle_data.data();
-                    encode_len = zrle_data.size();
-                } else {
-                    data_to_encode = mtf_data.data();
-                    encode_len = mtf_data.size();
-                }
+                data_to_encode = mtf_data.data();
+                encode_len = mtf_data.size();
             }
 
             // Count frequencies

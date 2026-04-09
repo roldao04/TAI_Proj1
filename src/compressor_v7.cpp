@@ -30,7 +30,7 @@
 
 using StreamHeader::ModelType;
 
-static constexpr size_t BLOCK_SIZE = 4 * 1024 * 1024;  // 4MB blocks
+static constexpr size_t BLOCK_SIZE = 512 * 1024;  // 512KB blocks (parallelism)
 static constexpr uint32_t NO_BWT_SENTINEL = 0xFFFFFFFF; // sentinel: no BWT/MTF applied
 
 struct BlockResult {

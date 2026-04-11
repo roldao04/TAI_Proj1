@@ -1,0 +1,4467 @@
+
+===== BEGIN README.md =====
+# Lossless Data Compression Tool
+
+**TAI Project #1 - 2025/26**
+
+**Algorithmic Information Theory**
+
+**Universidade de Aveiro**
+
+**Group 07**
+
+---
+
+## Overview
+
+This project implements a lossless data compression tool using:
+- **Burrows-Wheeler Transform (BWT)** for preprocessing (block-based, improves compression on repetitive data)
+- **Range Coding** for entropy coding (faster than arithmetic coding)
+- **Multi-Model System** with intelligent auto-selection:
+  - **Order-0** frequency model (static, fast, universal)
+  - **Order-1** adaptive context model (PPM-style, better compression for low-entropy data)
+- **Auto-Selection Algorithm** based on file entropy and size
+
+The system guarantees perfect reconstruction of the original data.
+
+---
+
+## Project Structure
+
+```
+project_1/
+├── src/
+│   ├── arithmetic/         # Range coder (entropy encoding)
+│   ├── model/             # Frequency models (Order-0, Order-1)
+│   ├── transform/         # BWT (Burrows-Wheeler Transform)
+│   ├── utils/             # File I/O and entropy calculation
+│   ├── compressor.cpp     # Main compression program
+│   └── decompressor.cpp   # Main decompression program
+├── include/               # Header files
+├── tests/                 # Verification and unit tests
+├── benchmarks/            # Benchmarking scripts
+├── versions/              # Version history and binaries
+├── data/                  # Test data files
+├── Makefile              # Build system
+└── README.md             # This file
+```
+
+---
+
+## Building
+
+Compile both compressor and decompressor:
+
+```bash
+make
+```
+
+This creates:
+- `bin/compress` - Compression tool
+- `bin/decompress` - Decompression tool
+
+To clean build artifacts:
+
+```bash
+make clean
+```
+
+---
+
+## Usage
+
+### Compression
+
+```bash
+./bin/compress <input_file> <compressed_file> [options]
+```
+
+**Options:**
+- `--model auto|order0|order1` - Model selection (default: auto)
+  - `auto` - Automatic selection based on file characteristics (recommended)
+  - `order0` - Force Order-0 frequency model (fast, universal)
+  - `order1` - Force Order-1 context model (better compression for low-entropy data)
+- `--bwt` - Force BWT preprocessing (even if auto-selection says no)
+- `--no-bwt` - Disable BWT preprocessing (revert to v2.0 behavior)
+- `--yes, -y` - Skip interactive prompts (useful for automation/benchmarks)
+
+**Examples:**
+```bash
+# Auto-selection (recommended - auto-selects model and BWT)
+./bin/compress data/test.txt data/test.compressed
+
+# Force BWT + Order-1 (maximum compression on text)
+./bin/compress data/test.txt data/test.compressed --model order1 --bwt
+
+# Disable BWT for speed
+./bin/compress data/test.txt data/test.compressed --no-bwt
+
+# Automated/batch processing (no prompts)
+./bin/compress data/test.txt data/test.compressed --yes
+```
+
+**Auto-Selection Rules:**
+- **BWT Selection:**
+  - Enabled when entropy < 6.5 and file size >= 1024 bytes
+  - Disabled for high-entropy or very small files
+- **Model Selection:**
+  - Entropy > 7.5 → Store uncompressed (incompressible data)
+  - Entropy 6.8-7.5 → Order-0 (high entropy, Order-1 overhead not worth it)
+  - File < 100KB → Order-0 (adaptive overhead not worthwhile)
+  - Otherwise → Order-1 (low entropy, achieves 20-50% better compression)
+
+### Decompression
+
+```bash
+./bin/decompress <compressed_file> <output_file>
+```
+
+Example:
+```bash
+./bin/decompress data/test.compressed data/test.decompressed
+```
+
+Note: Decompression automatically detects which model was used during compression.
+
+---
+
+## Verification
+
+Run the comprehensive test suite:
+
+```bash
+make test
+```
+
+This runs:
+1. **BWT Unit Tests** - Transform/inverse, block processing, edge cases
+2. **Integration Tests** - Lossless compression/decompression on:
+   - Text files
+   - Binary data
+   - Empty files
+   - Highly repetitive data
+
+All tests verify byte-for-byte identical reconstruction.
+
+---
+
+## Benchmarking
+
+### Compare Against Standard Tools
+
+Run comprehensive benchmarks on all data files:
+
+```bash
+make benchmark
+```
+
+This will:
+1. Test all files in `data/` directory (A through H)
+2. Compare against gzip, bzip2, xz, and zstd
+3. Report compression ratio, bits/symbol, and timing for each tool
+4. Generate results in CSV and Markdown formats
+
+**Output files:**
+- `benchmarks/results.csv` - Machine-readable data for analysis
+- `benchmarks/results.md` - Markdown table for reports
+
+**Single file benchmark:**
+```bash
+./benchmarks/compare.sh <file>
+```
+
+This compares G07 against gzip, bzip2, xz, and zstd on a single file.
+
+---
+
+## Implementation Details
+
+### Compressed File Format
+
+```
+| Model Type | Original Size | BWT Flag | BWT Indices | Model Data | Encoded Data |
+| (1 byte)   | (8 bytes)     | (1 byte) | (varies)    | (varies)   | (variable)   |
+```
+
+- **Model Type**: 0 = Order-0, 1 = Order-1, 255 = Uncompressed
+- **Original Size**: uint64_t, little-endian
+- **BWT Flag**: 0x00 = no BWT, 0x01 = BWT enabled
+- **BWT Indices**: If BWT enabled, primary indices for each 1024-byte block (4 bytes each)
+- **Model Data**:
+  - Order-0: 257 × uint32_t frequency table (1028 bytes)
+  - Order-1: No data stored (adaptive model builds during decode)
+  - Uncompressed: No data
+- **Encoded Data**: Range-coded bitstream (or raw data if uncompressed)
+
+### Range Coding
+
+Implementation based on Michael Schindler's range coder:
+> Schindler, M. (1998). "A Fast Renormalisation for Arithmetic Coding"
+
+Features:
+- Faster than arithmetic coding (~2x speedup)
+- Same compression efficiency
+- Renormalization in larger units than bits
+- Minimal file size overhead (< 0.01%)
+
+### Order-0 Model (Static)
+
+- Counts byte frequency in input (first pass)
+- Builds cumulative frequency table
+- All symbols assigned minimum frequency of 1 (avoid zero probabilities)
+- Includes EOF marker for proper termination
+- Fast and universal
+
+### Order-1 Model (Adaptive PPM)
+
+- Uses previous byte as context (256 possible contexts)
+- Adaptive frequency updates during encoding/decoding
+- Escape mechanism for unseen symbols
+- Simplified encoding (no PPM Method C exclusions)
+- No model data stored (builds during decode)
+- 20-50% better compression on low-entropy data
+
+### Burrows-Wheeler Transform (BWT)
+
+- Block-based preprocessing (1024-byte blocks)
+- Reversible transformation that groups similar characters
+- Suffix array construction for forward transform
+- LF mapping for efficient inverse transform
+- Auto-enabled for entropy < 6.5 and file size >= 1KB
+- Improves compression by 8-20% on text and structured data
+- Seamlessly integrated with range coding and models
+
+---
+
+## Performance Notes
+
+- **Memory**: Uses ~8GB max (requirement compliant)
+- **Optimization**: Compiled with `-O3` for performance
+- **Platform**: Tested on Linux
+- **Average Compression Ratio**: **57.48%** (v3)
+  - v2.0: 62.74% | v1.0: 71.44%
+  - **19.5% improvement over v1.0**
+  - **8.4% improvement over v2.0**
+- **Overall Ranking**: **#3** out of 5 tools (xz, bzip2, g07, zstd, gzip)
+- **Files Won**: 3/8 files (Files A, D, G)
+  - File A (text): 51.96% - Best among all tools
+  - File G (structured): 27.92% - Best among all tools
+- **Speed**: Competitive with multi-model system, BWT adds minimal overhead
+
+---
+
+## Version History
+
+See [versions/VERSIONS.md](versions/VERSIONS.md) for detailed version history and [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md) for comprehensive documentation.
+
+**Current Version**: 3.0 (March 2026)
+- **BWT preprocessing** (block-based, 1024-byte blocks)
+- Multi-model system (Order-0 + Order-1)
+- Range coding (faster than arithmetic)
+- Intelligent auto-selection (BWT + model)
+- **57.48% average compression ratio**
+- **#3 ranking** vs industry tools
+
+**Previous Versions**:
+- **v2.0** (March 2026): Multi-model + Range coding - 62.74% ratio
+- **v1.0** (February 2026): Order-0 + Arithmetic coding - 71.44% ratio
+
+---
+
+## Future Improvements
+
+Potential enhancements (see [versions/g07_v3.0/README.md](versions/g07_v3.0/README.md#future-improvements) for details):
+1. **Variable BWT Block Size**: Adaptive block size selection (1KB - 4KB)
+2. **Move-to-Front Transform**: Additional transform after BWT (used in bzip2)
+3. **Parallel BWT Processing**: Multi-threaded block processing
+4. **Run-Length Encoding**: Pre-process runs after BWT
+5. **Streaming Mode**: Support for files larger than RAM
+
+**Note**: Order-2 model was tested and removed after benchmarks showed no benefit over Order-1.
+
+---
+
+## Attribution
+
+- Range coding implementation: Based on Michael Schindler's range coder (GPL v2+)
+- BWT implementation: Original work by project team (based on Burrows-Wheeler 1994 paper)
+- Order-0 model implementation: Original work by project team
+- Order-1 adaptive PPM model: Original work by project team
+- Auto-selection algorithms: Original work by project team
+
+---
+
+## Authors
+
+- Guilherme Rosa (113968)
+- João Roldão (113920)
+- Henrique Teixeira (114588)
+
+---
+
+## License
+
+Educational project for TAI course at Universidade de Aveiro.
+
+===== END README.md =====
+
+===== BEGIN Makefile =====
+# Makefile for Lossless Data Compression Tool
+# TAI Project #1 - 2025/26
+
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -I./include
+LDFLAGS =
+
+# Directories
+SRC_DIR = src
+OBJ_DIR = obj
+BIN_DIR = bin
+
+# Source files
+RANGE_SRC = $(SRC_DIR)/arithmetic/range_coder.cpp
+MODEL_SRC = $(SRC_DIR)/model/frequency_model.cpp
+CONTEXT_SRC = $(SRC_DIR)/model/context_model.cpp
+UTILS_SRC = $(SRC_DIR)/utils/file_io.cpp
+ENTROPY_SRC = $(SRC_DIR)/utils/entropy_calculator.cpp
+BWT_SRC = $(SRC_DIR)/transform/bwt.cpp
+COMPRESSOR_SRC = $(SRC_DIR)/compressor.cpp
+DECOMPRESSOR_SRC = $(SRC_DIR)/decompressor.cpp
+
+# Object files
+RANGE_OBJ = $(OBJ_DIR)/range_coder.o
+MODEL_OBJ = $(OBJ_DIR)/frequency_model.o
+CONTEXT_OBJ = $(OBJ_DIR)/context_model.o
+UTILS_OBJ = $(OBJ_DIR)/file_io.o
+ENTROPY_OBJ = $(OBJ_DIR)/entropy_calculator.o
+BWT_OBJ = $(OBJ_DIR)/bwt.o
+COMPRESSOR_OBJ = $(OBJ_DIR)/compressor.o
+DECOMPRESSOR_OBJ = $(OBJ_DIR)/decompressor.o
+
+# Common objects (used by both compressor and decompressor)
+COMMON_OBJS = $(RANGE_OBJ) $(MODEL_OBJ) $(CONTEXT_OBJ) $(UTILS_OBJ) $(ENTROPY_OBJ) $(BWT_OBJ)
+
+# Executables
+COMPRESSOR = $(BIN_DIR)/compress
+DECOMPRESSOR = $(BIN_DIR)/decompress
+TEST_BWT = $(BIN_DIR)/test_bwt
+
+# Targets
+.PHONY: all clean test benchmark
+
+all: $(COMPRESSOR) $(DECOMPRESSOR)
+
+# Create directories
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
+
+# Compile object files
+$(RANGE_OBJ): $(RANGE_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(MODEL_OBJ): $(MODEL_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(CONTEXT_OBJ): $(CONTEXT_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(UTILS_OBJ): $(UTILS_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(ENTROPY_OBJ): $(ENTROPY_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BWT_OBJ): $(BWT_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(COMPRESSOR_OBJ): $(COMPRESSOR_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(DECOMPRESSOR_OBJ): $(DECOMPRESSOR_SRC) | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Link executables
+$(COMPRESSOR): $(COMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+$(DECOMPRESSOR): $(DECOMPRESSOR_OBJ) $(COMMON_OBJS) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+# Test executable
+$(TEST_BWT): tests/test_bwt.cpp $(BWT_OBJ) | $(BIN_DIR)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+# Clean build artifacts
+clean:
+	rm -rf $(OBJ_DIR) $(BIN_DIR)
+
+# Run tests
+test: $(COMPRESSOR) $(DECOMPRESSOR) $(TEST_BWT)
+	@echo "Running BWT unit tests..."
+	@$(TEST_BWT)
+	@echo ""
+	@echo "Running integration test..."
+	@bash tests/verify_lossless.sh
+
+# Run comprehensive benchmark on all data files
+benchmark: $(COMPRESSOR) $(DECOMPRESSOR)
+	@echo "Running comprehensive benchmark..."
+	@bash benchmarks/benchmark_all.sh
+
+===== END Makefile =====
+
+===== BEGIN AGENTS.md =====
+# AGENTS.md
+
+## Purpose
+- This repository contains a C++17 lossless compression tool for a TAI course project.
+- The active implementation uses BWT preprocessing, an Order-0 frequency model, an adaptive Order-1 context model, and a range coder.
+- Treat the checked-in code as the source of truth when README text disagrees with implementation details.
+
+## Repository layout
+- `src/compressor.cpp` and `src/decompressor.cpp` are the CLI entrypoints.
+- `src/arithmetic/` contains entropy coders; `range_coder.*` is the active production path.
+- `src/model/`, `src/transform/`, and `src/utils/` contain the statistical models, BWT implementation, and file/entropy helpers.
+- `include/` mirrors the public module structure used by `src/`.
+- `tests/test_bwt.cpp` is the unit-test executable source and `tests/verify_lossless.sh` is the integration test script.
+- `benchmarks/` contains benchmark scripts and generated reports.
+- `data/` is expected by benchmark scripts but is gitignored and may not exist locally.
+
+## Rule files discovered
+- No existing `AGENTS.md` was present when this file was created.
+- No Cursor rules were found in `.cursor/rules/` or `.cursorrules`, and no Copilot instructions were found in `.github/copilot-instructions.md`.
+- For this repo, `Makefile`, the source tree, and this file are the operative guidance for agents.
+
+## Toolchain and environment
+- Build system: `make`; compiler: `g++`; language standard: C++17.
+- Warning flags enforced by `Makefile`: `-Wall -Wextra`.
+- Optimization level in normal builds: `-O3`.
+- Include root: `-I./include`.
+- Shell scripts assume `bash`.
+- Benchmark scripts also assume common Linux/GNU userland tools.
+
+## Build commands
+- Build the main binaries: `make`
+- Build only the compressor: `make bin/compress`
+- Build only the decompressor: `make bin/decompress`
+- Build only the BWT unit-test binary: `make bin/test_bwt`
+- Clean build artifacts: `make clean`; rebuild from scratch: `make clean && make`
+
+## Test commands
+- Run the full test flow: `make test`
+- Run only the BWT unit tests: `make bin/test_bwt && ./bin/test_bwt`
+- Run only the integration script: `bash tests/verify_lossless.sh`
+- Run a manual single lossless case:
+  `./bin/compress input.bin output.g07 --yes && ./bin/decompress output.g07 restored.bin && cmp -s input.bin restored.bin`
+- Run a single benchmark file: `bash benchmarks/compare.sh path/to/file`
+
+## Lint and static checks
+- There is no dedicated lint target in `Makefile`.
+- There is no `clang-format`, `clang-tidy`, or other formatter/linter config checked in.
+- In practice, the minimum quality bar is a warning-free rebuild of the touched targets.
+- If you change headers or shared modules, prefer `make` over compiling a single object mentally.
+
+## Command caveats
+- `make test` builds correctly and the test bodies run, but on macOS the final integration script exits non-zero because `tests/verify_lossless.sh` uses GNU `stat -c%s`.
+- Do not mistake that macOS failure for a codec failure; the compress/decompress checks completed successfully before the script hit the GNU `stat` call.
+- `benchmarks/benchmark_all.sh` and `benchmarks/compare.sh` also assume GNU `stat`, GNU `timeout`, `numfmt`, and `bc`.
+- Benchmarks additionally expect a populated `data/` directory.
+- If you need script-level success on macOS, use GNU coreutils or patch the scripts to use BSD-compatible commands.
+
+## CLI usage
+- Compress: `./bin/compress <input_file> <compressed_file> [--model auto|order0|order1] [--bwt|--no-bwt] [--yes|-y]`
+- Decompress: `./bin/decompress <compressed_file> <output_file>`
+- Use `--yes` for automation so the compressor does not block on interactive warnings.
+
+## Architecture notes that affect edits
+- The compressed stream starts with a one-byte model tag followed by an 8-byte original size.
+- BWT-enabled streams then store a block count and one 4-byte primary index per block.
+- Order-0 streams serialize a 257-entry frequency table before encoded payload bytes.
+- Order-1 streams rebuild state adaptively during decode and do not serialize the full model.
+- Uncompressed mode stores the original bytes after the header.
+- Keep encoder and decoder header parsing perfectly in sync.
+- `src/arithmetic/arithmetic_coder.*` exists, but `Makefile` does not build or link it into the current binaries.
+- Do not switch production code back to arithmetic coding unless the task explicitly asks for that behavior.
+
+## Source-of-truth behavior details
+- Auto model selection in code is: entropy `> 7.5` -> uncompressed, entropy `> 6.8` -> Order-0, file size `< 102400` bytes -> Order-0, otherwise Order-1.
+- Auto BWT selection in code is: use BWT when entropy `< 6.5` and input size `> 10240` bytes.
+- BWT block size in the CLI code paths is currently `900*1024` bytes.
+- The README documents slightly different BWT thresholds; trust the code unless you are explicitly updating documentation.
+- If you change any threshold or file-format detail, update `src/compressor.cpp`, `src/decompressor.cpp`, tests, and README together.
+
+## File placement conventions
+- Public declarations live in `include/<module>/...`.
+- Implementations live in `src/<module>/...`.
+- New reusable logic should go into a module file, not directly into the CLI entrypoints, unless it is purely argument parsing or user interaction.
+- Tests belong in `tests/`.
+- Benchmark-only helpers belong in `benchmarks/`.
+
+## Include conventions
+- In module implementation files, include the matching project header first.
+- After the matching header, include only the standard headers actually needed by that file.
+- In top-level programs without a matching local header, standard headers can appear before project headers.
+- Use quoted includes for project headers, for example `"model/context_model.h"`.
+- Use angle brackets for standard-library headers.
+- Do not introduce `using namespace std;` or other broad namespace imports.
+
+## Formatting conventions
+- Use 4 spaces for indentation.
+- Keep opening braces on the same line as the declaration or control statement.
+- Keep closing braces vertically aligned with the opening construct.
+- Prefer one statement per line.
+- Use blank lines to separate logical blocks, not every small statement.
+- Long function signatures may wrap with continued parameters aligned under the opening parenthesis.
+- Long stream expressions may wrap across lines as already done in `src/compressor.cpp` and `src/decompressor.cpp`.
+- There is no formatter config, so match the surrounding file instead of imposing a new style.
+
+## Naming conventions
+- File names use `snake_case`.
+- Class names use `PascalCase`.
+- Functions, methods, free helpers, and local variables use `snake_case`.
+- Private data members use a trailing underscore when the file already follows that pattern.
+- Enum classes are preferred for mode-like sets of constants.
+- Enum values and macro-style constants are uppercase with underscores in the current codebase.
+- Header guards are uppercase with underscores and match the file name.
+- Namespaces are short and descriptive, for example `FileIO`.
+
+## Type conventions
+- Use `uint8_t`, `uint32_t`, and `uint64_t` for byte-level algorithms and serialized file-format fields.
+- Use `size_t` for container sizes, counts, and indexes tied to STL containers.
+- Use `int` when negative sentinel values are required, such as symbol lookup results.
+- Prefer `std::vector`, `std::array`, `std::string`, and `std::unique_ptr` over raw owning memory.
+- Prefer `enum class` over unscoped enums for new mode or state types.
+- Avoid new macros unless you are extending the imported range-coder style code and need to stay consistent there.
+
+## Error-handling conventions
+- Helper code throws exceptions on invalid input, bad files, and impossible decode states.
+- Use `std::runtime_error` for operational failures and `std::out_of_range` for range violations.
+- Validate file size, header offsets, model tags, and array bounds before decoding.
+- CLI entrypoints catch `const std::exception&`, print a concise `Error: ...`, and return `1`.
+- Use `std::cerr` for errors and warnings.
+- Use `std::cout` for progress messages and statistics.
+- Do not silently swallow decode or I/O failures.
+
+## Comment and documentation conventions
+- The codebase uses block comments at file/class level and `//` comments for local rationale.
+- Preserve section-divider comments when editing files that already use them.
+- Add comments for non-obvious algorithmic choices, not for trivial syntax.
+- Keep comments accurate if code changes invalidate documented thresholds or formats.
+- If you modify CLI behavior or file format, update `README.md` in the same change.
+
+## Testing conventions
+- Unit tests are plain C++ executables that use `assert`.
+- Integration tests are shell scripts using `set -e` and byte-for-byte verification with `cmp -s`.
+- Existing test helpers print detailed diagnostics to `stderr` before forcing failure.
+- If you add a new test binary, wire it into `Makefile` so agents can run it directly.
+- Prefer the narrowest test that exercises your change first, then run broader coverage as needed.
+- For codec, header, or format changes, finish with the full test flow, not only unit tests.
+
+## Practical workflow for agents
+- Read `Makefile` before assuming a target exists.
+- Prefer targeted rebuilds while iterating, then run `make test` before finishing substantial codec changes.
+- When a script fails on macOS after using GNU-specific utilities, inspect whether the actual algorithm checks already passed.
+- Keep encoder and decoder changes paired, and preserve backward compatibility unless the task explicitly changes the file format.
+
+## Quick change checklist
+- Rebuild the touched target or run `make`.
+- Run the most specific relevant test.
+- Run `make test` for anything that affects compression, decompression, headers, or models.
+- Update `README.md` if user-visible CLI behavior, file format, or thresholds changed.
+- Keep warnings at zero.
+
+===== END AGENTS.md =====
+
+===== BEGIN include/arithmetic/arithmetic_coder.h =====
+#ifndef ARITHMETIC_CODER_H
+#define ARITHMETIC_CODER_H
+
+#include <vector>
+#include <cstdint>
+#include <fstream>
+
+/*
+ * Arithmetic Coding Implementation
+ * Based on standard arithmetic coding algorithms
+ * Reference: "Introduction to Data Compression" by Khalid Sayood
+ *
+ * This implementation uses:
+ * - 32-bit precision for low and high bounds
+ * - Frequency-based probability model
+ * - Bit-by-bit output with carry handling
+ */
+
+class ArithmeticEncoder {
+private:
+    static const uint32_t CODE_VALUE_BITS = 32;
+    static const uint32_t TOP_VALUE = 0xFFFFFFFF;
+    static const uint32_t FIRST_QTR = 0x40000000;
+    static const uint32_t HALF = 0x80000000;
+    static const uint32_t THIRD_QTR = 0xC0000000;
+
+    uint32_t low;
+    uint32_t high;
+    uint32_t pending_bits;
+    std::vector<uint8_t> output_buffer;
+    uint8_t current_byte;
+    int bits_in_current_byte;
+
+    void output_bit(int bit);
+    void output_bit_plus_pending(int bit);
+
+public:
+    ArithmeticEncoder();
+
+    void encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq);
+    void finish();
+    const std::vector<uint8_t>& get_output() const { return output_buffer; }
+};
+
+class ArithmeticDecoder {
+private:
+    static const uint32_t CODE_VALUE_BITS = 32;
+    static const uint32_t TOP_VALUE = 0xFFFFFFFF;
+    static const uint32_t FIRST_QTR = 0x40000000;
+    static const uint32_t HALF = 0x80000000;
+    static const uint32_t THIRD_QTR = 0xC0000000;
+
+    uint32_t low;
+    uint32_t high;
+    uint32_t value;
+    const std::vector<uint8_t>& input_buffer;
+    size_t current_byte_index;
+    int bits_in_current_byte;
+
+    int input_bit();
+
+public:
+    ArithmeticDecoder(const std::vector<uint8_t>& input);
+
+    uint32_t get_current_count(uint32_t total_freq);
+    void decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq);
+};
+
+#endif // ARITHMETIC_CODER_H
+
+===== END include/arithmetic/arithmetic_coder.h =====
+
+===== BEGIN include/arithmetic/range_coder.h =====
+#ifndef RANGE_CODER_H
+#define RANGE_CODER_H
+
+#include <vector>
+#include <cstdint>
+
+/*
+ * Range Coder Implementation
+ * Based on Michael Schindler's range coder
+ *
+ * Academic Citation:
+ * Schindler, M. (1998). "A Fast Renormalisation for Arithmetic Coding".
+ * In Proceedings of the 1998 IEEE Data Compression Conference (DCC '98),
+ * Snowbird, UT, IEEE Computer Society Press, p. 572.
+ * DOI: 10.1109/DCC.1998.672314
+ *
+ * Original Implementation:
+ * Copyright (c) Michael Schindler, 1997, 1998, 1999, 2000
+ * http://www.compressconsult.com/rangecoder/
+ *
+ * License: GNU General Public License v2 or later
+ *
+ * Range encoding is based on an article by G.N.N. Martin, submitted
+ * March 1979 and presented on the Video & Data Recording Conference,
+ * Southampton, July 24-27, 1979.
+ *
+ * Range coding is closely related to arithmetic coding, except that
+ * it does renormalisation in larger units than bits and is thus faster
+ * (~2x speedup with minimal file size overhead < 0.01%).
+ *
+ * Adapted for TAI Project #1 by integrating with std::vector I/O
+ * and C++ class-based API while preserving Schindler's core algorithm.
+ */
+
+// Type definitions to match Schindler's code
+typedef uint32_t code_value;
+typedef uint32_t freq;
+
+// Schindler's rangecoder state structure
+typedef struct {
+    uint32_t low;           // low end of interval
+    uint32_t range;         // length of interval
+    uint32_t help;          // bytes_to_follow resp. intermediate value
+    unsigned char buffer;   // buffer for input/output
+    uint32_t bytecount;     // counter for outputed bytes
+} rangecoder;
+
+class RangeEncoder {
+private:
+    rangecoder rc;
+    std::vector<uint8_t> output_buffer;
+
+    // I/O helper for Schindler's code
+    void output_byte(uint8_t byte);
+
+    // Core functions from Schindler's implementation
+    void start_encoding_internal(char c, int initlength);
+    void enc_normalize();
+    void encode_freq_internal(freq sy_f, freq lt_f, freq tot_f);
+    uint32_t done_encoding_internal();
+
+public:
+    RangeEncoder();
+
+    // API compatible with existing compressor code
+    void encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq);
+    void finish();
+    const std::vector<uint8_t>& get_output() const { return output_buffer; }
+};
+
+class RangeDecoder {
+private:
+    rangecoder rc;
+    const std::vector<uint8_t>& input_buffer;
+    size_t position;
+
+    // I/O helper for Schindler's code
+    uint8_t input_byte();
+
+    // Core functions from Schindler's implementation
+    int start_decoding_internal();
+    void dec_normalize();
+    freq decode_culfreq_internal(freq tot_f);
+    void decode_update_internal(freq sy_f, freq lt_f, freq tot_f);
+    void done_decoding_internal();
+
+public:
+    RangeDecoder(const std::vector<uint8_t>& input);
+
+    // API compatible with existing decompressor code
+    uint32_t get_current_count(uint32_t total_freq);
+    void decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq);
+};
+
+#endif // RANGE_CODER_H
+
+===== END include/arithmetic/range_coder.h =====
+
+===== BEGIN include/model/context_model.h =====
+#ifndef CONTEXT_MODEL_H
+#define CONTEXT_MODEL_H
+
+#include <vector>
+#include <cstdint>
+#include <array>
+#include <map>
+#include <memory>
+
+/*
+ * Order-k Context Model with Escape Mechanism
+ *
+ * This model uses the previous k bytes as context to predict the next byte.
+ * It implements a fallback chain: Order-2 → Order-1 → Order-0
+ *
+ * When a symbol hasn't been seen in a context, an escape symbol is encoded
+ * and the model falls back to a lower order.
+ *
+ * SOLID Principles Applied:
+ * - SRP: Each method has single responsibility
+ * - OCP: Extensible encoding strategies
+ * - LSP: Consistent interfaces across modes
+ * - ISP: Separated interfaces for different concerns
+ * - DIP: Depends on abstract encoding strategy
+ *
+ * Memory usage: ~260MB for Order-2 (65,536 contexts × ~4KB each)
+ */
+
+class ContextModel {
+public:
+    // EncodingStep struct: represents one encoding operation (must be public and declared first)
+    struct EncodingStep {
+        int symbol;
+        uint32_t cum_freq_low;
+        uint32_t cum_freq_high;
+        uint32_t total_freq;
+    };
+
+private:
+    static const int ALPHABET_SIZE = 256;  // 256 bytes
+    static const int ESCAPE_SYMBOL = 256;  // Escape to lower order
+    static const int EOF_SYMBOL = 257;     // End of file marker
+    static const int EXTENDED_ALPHABET = 258;  // 256 bytes + escape + EOF
+
+    // Maximum order (k=2 means use previous 2 bytes as context)
+    static const int MAX_ORDER = 2;
+
+    // Encoding method configuration (OCP: Open for extension)
+    enum class EncodingMethod {
+        SIMPLE,      // No exclusions, faster (Order-1 only)
+        METHOD_C     // Full PPM Method C with exclusions
+    };
+
+    EncodingMethod encoding_method_;
+
+    // Context structure: maps symbol → frequency (SRP: encapsulated context management)
+    struct Context {
+        std::map<int, uint32_t> frequencies;  // symbol → count
+        uint32_t total_freq;
+
+        // Cache for cumulative frequencies (optimization to avoid recomputing)
+        std::vector<int> cached_symbols;           // Sorted list of symbols
+        std::vector<uint32_t> cached_cumulative;   // Cumulative frequencies
+        bool cumulative_dirty;                     // True if cache needs rebuild
+
+        Context() : total_freq(0), cumulative_dirty(true) {}
+
+        // SRP: Single responsibility for symbol checking
+        bool has_symbol(int symbol) const {
+            return frequencies.find(symbol) != frequencies.end();
+        }
+
+        // SRP: Single responsibility for cache management
+        void invalidate_cache() {
+            cumulative_dirty = true;
+        }
+
+        void ensure_cache_valid();  // Rebuild cache if dirty
+    };
+
+    // Order-2 contexts: DISABLED - no benefit over Order-1, wastes ~260MB memory
+    // Benchmark results showed identical compression ratios with worse performance
+    // std::array<std::unique_ptr<Context>, 65536> order2_contexts;
+
+    // Order-1 contexts: 256 possible 1-byte contexts
+    std::array<std::unique_ptr<Context>, 256> order1_contexts;
+
+    // Order-0 context: single context for all symbols (fallback)
+    std::unique_ptr<Context> order0_context;
+
+    // History buffer (stores last MAX_ORDER bytes)
+    std::vector<uint8_t> history;
+
+    // Helper methods
+    uint32_t get_context_id_order2() const;
+    uint32_t get_context_id_order1() const;
+
+    Context* get_context(int order);
+    void ensure_context_exists(int order);
+
+    void build_cumulative_freq(const Context* ctx,
+                              std::vector<int>& symbols,
+                              std::vector<uint32_t>& cumulative) const;
+
+    // SRP: Separate encoding strategies
+    std::vector<EncodingStep> encode_symbol_simple(uint8_t byte);
+    std::vector<EncodingStep> encode_symbol_with_exclusions(uint8_t byte);
+
+public:
+    ContextModel();
+
+    // Configuration methods (OCP: Open for extension, closed for modification)
+    void set_encoding_method_simple() { encoding_method_ = EncodingMethod::SIMPLE; }
+    void set_encoding_method_ppm_c() { encoding_method_ = EncodingMethod::METHOD_C; }
+    bool is_using_exclusions() const { return encoding_method_ == EncodingMethod::METHOD_C; }
+
+    // Build model from data (static mode - pre-scans data)
+    void build_from_data(const std::vector<uint8_t>& data);
+
+    // Initialize for adaptive mode (no pre-scanning)
+    void init_adaptive();
+
+    // Initialize for adaptive mode with warm start (scan first N bytes)
+    void init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size = 8192);
+
+    // Core API: Encode a symbol (LSP: Consistent interface regardless of encoding method)
+    // Returns list of encoding steps (may include escapes)
+    std::vector<EncodingStep> encode_symbol(uint8_t byte);
+
+    // Decode a symbol: may need multiple steps (escapes) to get actual byte
+    // Returns -1 if escape, >= 0 if actual symbol, -2 if EOF
+    int decode_symbol(uint32_t cum_freq);
+
+    // Model update operations (SRP: grouped by responsibility)
+    void update_history(uint8_t byte);
+    void update_frequencies(uint8_t byte);
+    void reset();
+
+    // ISP: Symbol range queries interface
+    void get_symbol_range(int order, int symbol,
+                         uint32_t& cum_freq_low,
+                         uint32_t& cum_freq_high,
+                         uint32_t& total_freq) const;
+
+    void get_symbol_range_with_exclusions(int order, int symbol,
+                                         const std::vector<int>& excluded_symbols,
+                                         uint32_t& cum_freq_low,
+                                         uint32_t& cum_freq_high,
+                                         uint32_t& total_freq) const;
+
+    // ISP: Symbol finding interface
+    int find_symbol(int order, uint32_t cum_freq) const;
+    int find_symbol_with_exclusions(int order, uint32_t cum_freq,
+                                   const std::vector<int>& excluded_symbols) const;
+
+    // ISP: Context query interface
+    bool has_symbol_in_context(int order, int symbol) const;
+    uint32_t get_total_freq(int order) const;
+    uint32_t get_total_freq_with_exclusions(int order, const std::vector<int>& excluded_symbols) const;
+    size_t get_history_size() const { return history.size(); }
+    std::vector<int> get_context_symbols(int order) const;
+
+    // Statistics and debugging
+    void print_statistics() const;
+};
+
+#endif // CONTEXT_MODEL_H
+
+===== END include/model/context_model.h =====
+
+===== BEGIN include/model/frequency_model.h =====
+#ifndef FREQUENCY_MODEL_H
+#define FREQUENCY_MODEL_H
+
+#include <vector>
+#include <cstdint>
+#include <array>
+
+/*
+ * Order-0 Frequency Model
+ *
+ * This model maintains frequency counts for each byte value (0-255)
+ * plus an EOF symbol, and provides cumulative frequency information
+ * required by the arithmetic coder.
+ *
+ * The model supports two modes:
+ * 1. Static: frequencies are counted in a first pass, then used for encoding
+ * 2. Adaptive: frequencies can be updated during encoding/decoding
+ */
+
+class FrequencyModel {
+private:
+    static const int ALPHABET_SIZE = 257;  // 256 bytes + 1 EOF symbol
+    static const int EOF_SYMBOL = 256;
+
+    std::array<uint32_t, ALPHABET_SIZE> frequencies;
+    std::array<uint32_t, ALPHABET_SIZE> cumulative_freq;
+    uint32_t total_freq;
+
+    void build_cumulative_freq();
+
+public:
+    FrequencyModel();
+
+    // Build model from data
+    void build_from_data(const std::vector<uint8_t>& data);
+
+    // Get cumulative frequency range for a symbol
+    void get_symbol_range(int symbol, uint32_t& cum_freq_low, uint32_t& cum_freq_high) const;
+
+    // Find symbol from cumulative frequency
+    int find_symbol(uint32_t cum_freq) const;
+
+    // Get total frequency
+    uint32_t get_total_freq() const { return total_freq; }
+
+    // Get frequencies (for saving model to compressed file)
+    const std::array<uint32_t, ALPHABET_SIZE>& get_frequencies() const { return frequencies; }
+
+    // Set frequencies (for loading model from compressed file)
+    void set_frequencies(const std::array<uint32_t, ALPHABET_SIZE>& freq);
+
+    // Get EOF symbol
+    static int get_eof_symbol() { return EOF_SYMBOL; }
+};
+
+#endif // FREQUENCY_MODEL_H
+
+===== END include/model/frequency_model.h =====
+
+===== BEGIN include/transform/bwt.h =====
+#ifndef BWT_H
+#define BWT_H
+
+#include <vector>
+#include <cstdint>
+#include <utility>
+
+/*
+ * Burrows-Wheeler Transform (BWT)
+ *
+ * The BWT is a block-sorting compression algorithm that rearranges
+ * characters in a string into runs of similar characters. This makes
+ * the output more compressible by subsequent statistical coders.
+ *
+ * Key Properties:
+ * - Reversible: Can perfectly reconstruct original from BWT output
+ * - Groups similar characters together
+ * - Particularly effective on structured data (XML, JSON, etc.)
+ *
+ * Example:
+ *   Input:  "banana$"
+ *   Output: "annb$aa" + primary_index=3
+ *
+ * Implementation Strategy:
+ * - Phase 1: Naive O(n² log n) suffix array construction (simple, works)
+ * - Phase 2: SA-IS algorithm for O(n) construction (optimized)
+ * - Block-based processing for large files (900KB blocks like bzip2)
+ *
+ * Memory Usage:
+ * - Single block (900KB): ~4MB for suffix array + data
+ * - Sequential processing: max 6MB at any time
+ *
+ * References:
+ * - Burrows & Wheeler (1994): "A Block-sorting Lossless Data Compression Algorithm"
+ * - Nong, Zhang, Chan (2009): "Linear Time Suffix Array Construction Using D-Critical Substrings"
+ * - bzip2 source code: Practical BWT implementation
+ */
+
+class BWT {
+public:
+    /*
+     * Forward BWT Transform (Single Block)
+     *
+     * Transforms input data into BWT representation.
+     *
+     * Algorithm:
+     * 1. Append sentinel character (implicit, not stored)
+     * 2. Build suffix array (all rotations sorted)
+     * 3. Extract last column of sorted rotations matrix
+     * 4. Return transformed data + primary index
+     *
+     * Parameters:
+     *   input - Input data to transform
+     *
+     * Returns:
+     *   pair<bwt_output, primary_index>
+     *   - bwt_output: Transformed data (same length as input)
+     *   - primary_index: Position where original string appears in sorted rotations
+     *
+     * Time Complexity: O(n²log n) naive, O(n) with SA-IS
+     * Space Complexity: O(n)
+     *
+     * Example:
+     *   transform("banana") → ("annbaa", 3)
+     */
+    static std::pair<std::vector<uint8_t>, uint32_t>
+        transform(const std::vector<uint8_t>& input);
+
+    /*
+     * Inverse BWT Transform (Single Block)
+     *
+     * Reconstructs original data from BWT output.
+     *
+     * Algorithm:
+     * 1. Count character frequencies
+     * 2. Compute first column (sorted characters)
+     * 3. Build LF (Last-to-First) mapping
+     * 4. Follow transformations starting from primary_index
+     * 5. Reconstruct original string
+     *
+     * Parameters:
+     *   bwt_data - BWT transformed data
+     *   primary_index - Index where original appears
+     *
+     * Returns:
+     *   Original reconstructed data
+     *
+     * Time Complexity: O(n)
+     * Space Complexity: O(n)
+     *
+     * Example:
+     *   inverse_transform("annbaa", 3) → "banana"
+     */
+    static std::vector<uint8_t>
+        inverse_transform(const std::vector<uint8_t>& bwt_data, uint32_t primary_index);
+
+    /*
+     * Forward BWT Transform (Multiple Blocks)
+     *
+     * Transforms large input by splitting into blocks.
+     * Each block processed independently for parallelization potential.
+     *
+     * Parameters:
+     *   input - Input data to transform
+     *   block_size - Size of each block (default: 900KB like bzip2)
+     *
+     * Returns:
+     *   pair<concatenated_bwt_output, vector_of_primary_indices>
+     *
+     * Example:
+     *   10MB file with 900KB blocks → 12 blocks, 12 primary indices
+     */
+    static std::pair<std::vector<uint8_t>, std::vector<uint32_t>>
+        transform_blocks(const std::vector<uint8_t>& input, size_t block_size = 900*1024);
+
+    /*
+     * Inverse BWT Transform (Multiple Blocks)
+     *
+     * Reconstructs original from block-based BWT.
+     *
+     * Parameters:
+     *   bwt_data - Concatenated BWT data from all blocks
+     *   primary_indices - Vector of primary indices (one per block)
+     *   block_size - Size of each block (must match transform)
+     *
+     * Returns:
+     *   Original reconstructed data
+     */
+    static std::vector<uint8_t>
+        inverse_transform_blocks(const std::vector<uint8_t>& bwt_data,
+                                 const std::vector<uint32_t>& primary_indices,
+                                 size_t block_size = 900*1024);
+
+    /*
+     * Build Cyclic Suffix Array (Prefix-Doubling)
+     *
+     * Constructs the lexicographic order of all cyclic rotations using
+     * the standard prefix-doubling algorithm for cyclic shifts.
+     *
+     * Parameters:
+     *   data - Input data
+     *
+     * Returns:
+     *   Array of rotation start indices in sorted order
+     *
+     * Time Complexity: O(n log n)
+     * Space Complexity: O(n)
+     */
+    static std::vector<uint32_t> build_suffix_array_prefix_doubling(const std::vector<uint8_t>& data);
+
+private:
+    /*
+     * Helper: Check if suffix array is valid
+     *
+     * Verifies that suffix array correctly represents all suffixes in sorted order.
+     * Used for testing and validation.
+     */
+    static bool validate_suffix_array(const std::vector<uint8_t>& data,
+                                      const std::vector<uint32_t>& sa);
+};
+
+#endif // BWT_H
+
+===== END include/transform/bwt.h =====
+
+===== BEGIN include/utils/entropy_calculator.h =====
+#ifndef ENTROPY_CALCULATOR_H
+#define ENTROPY_CALCULATOR_H
+
+#include <vector>
+#include <cstdint>
+
+/*
+ * Entropy Calculator
+ *
+ * Computes Shannon entropy of data to detect compressibility.
+ * Used to avoid wasting time on incompressible (random/pre-compressed) data.
+ *
+ * Shannon entropy: H = -Σ p(x) * log2(p(x))
+ * where p(x) is the probability of symbol x
+ *
+ * Returns value in range [0, 8] bits/symbol:
+ * - 0: Uniform (single byte repeated) - highly compressible
+ * - 4-6: Natural text/structured data - compressible
+ * - 7.5+: Random/encrypted/compressed - incompressible
+ */
+
+class EntropyCalculator {
+public:
+    // Calculate entropy of data (samples first sample_size bytes)
+    // If sample_size = 0 or > data.size(), uses entire data
+    static double calculate(const std::vector<uint8_t>& data, size_t sample_size = 8192);
+
+    // Quick compressibility check
+    static bool is_compressible(const std::vector<uint8_t>& data, double threshold = 7.5);
+
+    // Classify data type based on entropy
+    enum class DataType {
+        HIGHLY_COMPRESSIBLE,  // entropy < 5.0 (repetitive, uniform)
+        COMPRESSIBLE,         // entropy 5.0-7.0 (text, structured)
+        INCOMPRESSIBLE        // entropy > 7.0 (random, encrypted, compressed)
+    };
+
+    static DataType classify(const std::vector<uint8_t>& data);
+};
+
+#endif // ENTROPY_CALCULATOR_H
+
+===== END include/utils/entropy_calculator.h =====
+
+===== BEGIN include/utils/file_io.h =====
+#ifndef FILE_IO_H
+#define FILE_IO_H
+
+#include <vector>
+#include <string>
+#include <cstdint>
+
+namespace FileIO {
+    // Read entire file into a byte vector
+    std::vector<uint8_t> read_file(const std::string& filename);
+
+    // Write byte vector to file
+    void write_file(const std::string& filename, const std::vector<uint8_t>& data);
+
+    // Get file size in bytes
+    size_t get_file_size(const std::string& filename);
+}
+
+#endif // FILE_IO_H
+
+===== END include/utils/file_io.h =====
+
+===== BEGIN src/arithmetic/arithmetic_coder.cpp =====
+#include "arithmetic/arithmetic_coder.h"
+#include <stdexcept>
+
+// ============================================================================
+// ArithmeticEncoder Implementation
+// ============================================================================
+
+ArithmeticEncoder::ArithmeticEncoder()
+    : low(0), high(TOP_VALUE), pending_bits(0), current_byte(0), bits_in_current_byte(0) {
+}
+
+void ArithmeticEncoder::output_bit(int bit) {
+    current_byte = (current_byte << 1) | bit;
+    bits_in_current_byte++;
+
+    if (bits_in_current_byte == 8) {
+        output_buffer.push_back(current_byte);
+        current_byte = 0;
+        bits_in_current_byte = 0;
+    }
+}
+
+void ArithmeticEncoder::output_bit_plus_pending(int bit) {
+    output_bit(bit);
+    while (pending_bits > 0) {
+        output_bit(1 - bit);
+        pending_bits--;
+    }
+}
+
+void ArithmeticEncoder::encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
+    uint64_t range = (uint64_t)high - (uint64_t)low + 1;
+    high = low + (uint32_t)((range * cum_freq_high) / total_freq) - 1;
+    low = low + (uint32_t)((range * cum_freq_low) / total_freq);
+
+    while (true) {
+        if (high < HALF) {
+            output_bit_plus_pending(0);
+        } else if (low >= HALF) {
+            output_bit_plus_pending(1);
+            low -= HALF;
+            high -= HALF;
+        } else if (low >= FIRST_QTR && high < THIRD_QTR) {
+            pending_bits++;
+            low -= FIRST_QTR;
+            high -= FIRST_QTR;
+        } else {
+            break;
+        }
+        low = low << 1;
+        high = (high << 1) | 1;
+    }
+}
+
+void ArithmeticEncoder::finish() {
+    pending_bits++;
+    if (low < FIRST_QTR) {
+        output_bit_plus_pending(0);
+    } else {
+        output_bit_plus_pending(1);
+    }
+
+    if (bits_in_current_byte > 0) {
+        current_byte <<= (8 - bits_in_current_byte);
+        output_buffer.push_back(current_byte);
+    }
+}
+
+// ============================================================================
+// ArithmeticDecoder Implementation
+// ============================================================================
+
+ArithmeticDecoder::ArithmeticDecoder(const std::vector<uint8_t>& input)
+    : low(0), high(TOP_VALUE), value(0), input_buffer(input),
+      current_byte_index(0), bits_in_current_byte(0) {
+
+    for (uint32_t i = 0; i < CODE_VALUE_BITS; i++) {
+        value = (value << 1) | input_bit();
+    }
+}
+
+int ArithmeticDecoder::input_bit() {
+    if (bits_in_current_byte == 0) {
+        if (current_byte_index >= input_buffer.size()) {
+            return 0;
+        }
+        bits_in_current_byte = 8;
+    }
+
+    int bit = (input_buffer[current_byte_index] >> (bits_in_current_byte - 1)) & 1;
+    bits_in_current_byte--;
+
+    if (bits_in_current_byte == 0) {
+        current_byte_index++;
+    }
+
+    return bit;
+}
+
+uint32_t ArithmeticDecoder::get_current_count(uint32_t total_freq) {
+    uint64_t range = (uint64_t)high - (uint64_t)low + 1;
+    uint64_t scaled = ((uint64_t)(value - low) + 1) * total_freq - 1;
+    uint32_t count = (uint32_t)(scaled / range);
+    return count;
+}
+
+void ArithmeticDecoder::decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
+    uint64_t range = (uint64_t)high - (uint64_t)low + 1;
+    high = low + (uint32_t)((range * cum_freq_high) / total_freq) - 1;
+    low = low + (uint32_t)((range * cum_freq_low) / total_freq);
+
+    while (true) {
+        if (high < HALF) {
+
+        } else if (low >= HALF) {
+            low -= HALF;
+            high -= HALF;
+            value -= HALF;
+        } else if (low >= FIRST_QTR && high < THIRD_QTR) {
+            low -= FIRST_QTR;
+            high -= FIRST_QTR;
+            value -= FIRST_QTR;
+        } else {
+            break;
+        }
+        low = low << 1;
+        high = (high << 1) | 1;
+        value = (value << 1) | input_bit();
+    }
+}
+
+===== END src/arithmetic/arithmetic_coder.cpp =====
+
+===== BEGIN src/arithmetic/range_coder.cpp =====
+#include "arithmetic/range_coder.h"
+#include <stdexcept>
+
+/*
+ * Range Coder Implementation
+ * Based on Michael Schindler's range coder (rangecod.cpp version 1.3)
+ *
+ * Original Copyright (c) Michael Schindler, 1997-2000
+ * Adapted for TAI Project #1 with std::vector I/O integration
+ *
+ * This preserves Schindler's core algorithm while adapting I/O
+ * to work with modern C++ containers.
+ */
+
+// Constants from Schindler's implementation
+#define CODE_BITS 32
+#define Top_value ((code_value)1 << (CODE_BITS-1))
+#define SHIFT_BITS (CODE_BITS - 9)
+#define EXTRA_BITS ((CODE_BITS-2) % 8 + 1)
+#define Bottom_value (Top_value >> 8)
+
+// ============================================================================
+// RangeEncoder Implementation
+// ============================================================================
+
+RangeEncoder::RangeEncoder() {
+    // Initialize encoder with header byte 0
+    start_encoding_internal(0, 0);
+}
+
+void RangeEncoder::output_byte(uint8_t byte) {
+    output_buffer.push_back(byte);
+}
+
+void RangeEncoder::start_encoding_internal(char c, int initlength) {
+    rc.low = 0;
+    rc.range = Top_value;
+    rc.buffer = c;
+    rc.help = 0;
+    rc.bytecount = initlength;
+}
+
+void RangeEncoder::enc_normalize() {
+    while (rc.range <= Bottom_value) {
+        if (rc.low < (code_value)0xff << SHIFT_BITS) {
+            output_byte(rc.buffer);
+            for (; rc.help; rc.help--)
+                output_byte(0xff);
+            rc.buffer = (unsigned char)(rc.low >> SHIFT_BITS);
+        } else if (rc.low & Top_value) {
+            output_byte(rc.buffer + 1);
+            for (; rc.help; rc.help--)
+                output_byte(0);
+            rc.buffer = (unsigned char)(rc.low >> SHIFT_BITS);
+        } else {
+            rc.help++;
+        }
+        rc.range <<= 8;
+        rc.low = (rc.low << 8) & (Top_value - 1);
+        rc.bytecount++;
+    }
+}
+void RangeEncoder::encode_freq_internal(freq sy_f, freq lt_f, freq tot_f) {
+    code_value r, tmp;
+    enc_normalize();
+    r = rc.range / tot_f;
+    tmp = r * lt_f;
+    rc.low += tmp;
+    if (lt_f + sy_f < tot_f)
+        rc.range = r * sy_f;
+    else
+        rc.range -= tmp;
+}
+
+void RangeEncoder::encode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
+    freq sy_f = cum_freq_high - cum_freq_low;
+    freq lt_f = cum_freq_low;
+    freq tot_f = total_freq;
+    encode_freq_internal(sy_f, lt_f, tot_f);
+}
+
+uint32_t RangeEncoder::done_encoding_internal() {
+    uint32_t tmp;
+    enc_normalize();
+    rc.bytecount += 5;
+    if ((rc.low & (Bottom_value - 1)) < ((rc.bytecount & 0xffffffL) >> 1))
+        tmp = rc.low >> SHIFT_BITS;
+    else
+        tmp = (rc.low >> SHIFT_BITS) + 1;
+    if (tmp > 0xff) {  // we have a carry
+        output_byte(rc.buffer + 1);
+        for (; rc.help; rc.help--)
+            output_byte(0);
+    } else {  // no carry
+        output_byte(rc.buffer);
+        for (; rc.help; rc.help--)
+            output_byte(0xff);
+    }
+    output_byte(tmp & 0xff);
+    output_byte((rc.bytecount >> 16) & 0xff);
+    output_byte((rc.bytecount >> 8) & 0xff);
+    output_byte(rc.bytecount & 0xff);
+    return rc.bytecount;
+}
+
+void RangeEncoder::finish() {
+    done_encoding_internal();
+}
+
+// ============================================================================
+// RangeDecoder Implementation
+// ============================================================================
+
+RangeDecoder::RangeDecoder(const std::vector<uint8_t>& input)
+    : input_buffer(input), position(0) {
+    start_decoding_internal();
+}
+
+uint8_t RangeDecoder::input_byte() {
+    if (position >= input_buffer.size()) {
+        return 0;
+    }
+    return input_buffer[position++];
+}
+
+int RangeDecoder::start_decoding_internal() {
+    int c = input_byte();
+    if (c == -1) {
+        throw std::runtime_error("Unexpected end of input");
+    }
+    rc.buffer = input_byte();
+    rc.low = rc.buffer >> (8 - EXTRA_BITS);
+    rc.range = (code_value)1 << EXTRA_BITS;
+    return c;
+}
+
+void RangeDecoder::dec_normalize() {
+    while (rc.range <= Bottom_value) {
+        rc.low = (rc.low << 8) | ((rc.buffer << EXTRA_BITS) & 0xff);
+        rc.buffer = input_byte();
+        rc.low |= rc.buffer >> (8 - EXTRA_BITS);
+        rc.range <<= 8;
+    }
+}
+
+freq RangeDecoder::decode_culfreq_internal(freq tot_f) {
+    freq tmp;
+    dec_normalize();
+    rc.help = rc.range / tot_f;
+    tmp = rc.low / rc.help;
+    return (tmp >= tot_f ? tot_f - 1 : tmp);
+}
+
+uint32_t RangeDecoder::get_current_count(uint32_t total_freq) {
+    return decode_culfreq_internal(total_freq);
+}
+
+void RangeDecoder::decode_update_internal(freq sy_f, freq lt_f, freq tot_f) {
+    code_value tmp;
+    tmp = rc.help * lt_f;
+    rc.low -= tmp;
+    if (lt_f + sy_f < tot_f)
+        rc.range = rc.help * sy_f;
+    else
+        rc.range -= tmp;
+}
+
+void RangeDecoder::decode_symbol(uint32_t cum_freq_low, uint32_t cum_freq_high, uint32_t total_freq) {
+    freq sy_f = cum_freq_high - cum_freq_low;
+    freq lt_f = cum_freq_low;
+    freq tot_f = total_freq;
+    decode_update_internal(sy_f, lt_f, tot_f);
+}
+
+void RangeDecoder::done_decoding_internal() {
+    dec_normalize();
+}
+
+===== END src/arithmetic/range_coder.cpp =====
+
+===== BEGIN src/compressor.cpp =====
+#include <iostream>
+#include <chrono>
+#include <string>
+#include <cstring>
+#include "arithmetic/range_coder.h"
+#include "model/frequency_model.h"
+#include "model/context_model.h"
+#include "utils/file_io.h"
+#include "utils/entropy_calculator.h"
+#include "transform/bwt.h"
+
+/*
+ * Lossless Data Compressor
+ *
+ * Compressed file format:
+ * - Model type (1 byte): 0=Order-0, 1=Order-1, 3/4=BWT variants, 255=Uncompressed
+ * - Original file size (8 bytes, uint64_t)
+ * - BWT header (if BWT enabled): block count + primary indices
+ * - Model data (Order-0 only: frequency table)
+ * - Range-coded data
+ */
+
+enum class ModelType {
+    ORDER_0 = 0,
+    ORDER_1 = 1,
+    ORDER_2 = 2,
+    ORDER_0_BWT = 3,
+    ORDER_1_BWT = 4,
+    UNCOMPRESSED = 255
+};
+
+void print_usage(const char* program_name) {
+    std::cerr << "Usage: " << program_name << " <input_file> <output_file> [OPTIONS]" << std::endl;
+    std::cerr << "\nModel Options:" << std::endl;
+    std::cerr << "  --model auto      Auto-select best model based on file analysis (default)" << std::endl;
+    std::cerr << "  --model order0    Force Order-0 frequency model (fast, universal)" << std::endl;
+    std::cerr << "  --model order1    Force Order-1 adaptive model (best compression for low-entropy data)" << std::endl;
+    std::cerr << "\nBWT Preprocessing:" << std::endl;
+    std::cerr << "  --bwt             Force BWT preprocessing (improves compression on structured data)" << std::endl;
+    std::cerr << "  --no-bwt          Disable BWT preprocessing (default: auto-decided)" << std::endl;
+    std::cerr << "\nOther Options:" << std::endl;
+    std::cerr << "  --yes, -y         Skip interactive prompts (useful for automation/benchmarks)" << std::endl;
+    std::cerr << "\nAuto-selection rules (based on benchmark results):" << std::endl;
+    std::cerr << "  Entropy > 7.5 → UNCOMPRESSED (incompressible, e.g., already compressed)" << std::endl;
+    std::cerr << "  Entropy 6.8-7.5 → Order-0 (high entropy, Order-1 too slow for marginal gain)" << std::endl;
+    std::cerr << "  File < 100KB → Order-0 (adaptive overhead not worth it)" << std::endl;
+    std::cerr << "  Otherwise → Order-1 (low entropy, achieves 20-50% better compression)" << std::endl;
+    std::cerr << "\nNotes:" << std::endl;
+    std::cerr << "  - Order-1 uses simplified encoding (no PPM Method C exclusions)" << std::endl;
+    std::cerr << "  - Order-2 removed (provided no benefit over Order-1)" << std::endl;
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    std::string input_filename = argv[1];
+    std::string output_filename = argv[2];
+
+    ModelType model_type = ModelType::ORDER_0;
+    bool auto_select = true;
+    bool force_mode = false;
+    int bwt_preference = 0;
+
+    for (int i = 3; i < argc; i++) {
+        std::string arg = argv[i];
+
+        if (arg == "--yes" || arg == "-y") {
+            force_mode = true;
+        } else if (arg == "--bwt") {
+            bwt_preference = 1;
+        } else if (arg == "--no-bwt") {
+            bwt_preference = -1;
+        } else if (arg == "--model") {
+            if (i + 1 < argc) {
+                std::string model_name = argv[i + 1];
+                if (model_name == "order0") {
+                    model_type = ModelType::ORDER_0;
+                    auto_select = false;
+                } else if (model_name == "order1") {
+                    model_type = ModelType::ORDER_1;
+                    auto_select = false;
+                } else if (model_name == "order2") {
+                    std::cerr << "Error: Order-2 has been removed (provided no benefit over Order-1)" << std::endl;
+                    std::cerr << "       Benchmark results showed identical compression ratios with worse performance" << std::endl;
+                    std::cerr << "       Use --model order1 instead, or --model auto for automatic selection" << std::endl;
+                    return 1;
+                } else if (model_name == "auto") {
+                    auto_select = true;
+                } else {
+                    std::cerr << "Error: Unknown model type '" << model_name << "'" << std::endl;
+                    print_usage(argv[0]);
+                    return 1;
+                }
+                i++;
+            } else {
+                std::cerr << "Error: --model requires an argument (order0, order1, or auto)" << std::endl;
+                print_usage(argv[0]);
+                return 1;
+            }
+        }
+    }
+
+    try {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        std::cout << "Reading input file: " << input_filename << std::endl;
+        std::vector<uint8_t> input_data = FileIO::read_file(input_filename);
+        std::cout << "Input size: " << input_data.size() << " bytes" << std::endl;
+
+        if (auto_select) {
+            double entropy = EntropyCalculator::calculate(input_data, 8192);
+            std::cout << "Detected entropy: " << entropy << " bits/symbol" << std::endl;
+
+            if (entropy > 7.5) {
+                model_type = ModelType::UNCOMPRESSED;
+                std::cout << "Decision: UNCOMPRESSED (entropy " << entropy << " > 7.5, incompressible)" << std::endl;
+            } else if (entropy > 6.8) {
+                model_type = ModelType::ORDER_0;
+                std::cout << "Decision: Order-0 (high entropy " << entropy << " > 6.8, marginal compression benefit)" << std::endl;
+            } else if (input_data.size() < 102400) {
+                model_type = ModelType::ORDER_0;
+                std::cout << "Decision: Order-0 (small file < 100KB)" << std::endl;
+            } else {
+                model_type = ModelType::ORDER_1;
+                std::cout << "Decision: Order-1 (entropy " << entropy << " < 6.8, good compression expected)" << std::endl;
+            }
+        } else {
+            std::cout << "Using user-specified model" << std::endl;
+        }
+
+        if (!auto_select && model_type == ModelType::ORDER_1) {
+            double entropy = EntropyCalculator::calculate(input_data, 8192);
+            if (entropy > 6.8) {
+                std::cerr << "\n⚠️  WARNING: Order-1 not recommended for high-entropy files!" << std::endl;
+                std::cerr << "    Detected entropy: " << entropy << " bits/symbol (threshold: 6.8)" << std::endl;
+                std::cerr << "    Expected issues: Very slow compression (10-30s), possible timeout on decompression" << std::endl;
+                std::cerr << "    Recommendation: Use --model auto (automatic selection) or --model order0" << std::endl;
+
+                if (force_mode) {
+                    std::cerr << "    --yes flag detected: Proceeding with Order-1 despite warning" << std::endl;
+                } else {
+                    std::cerr << "\nContinue with Order-1 anyway? (y/N): ";
+                    char response;
+                    std::cin >> response;
+                    if (response != 'y' && response != 'Y') {
+                        std::cout << "Aborted. Using Order-0 instead for safety." << std::endl;
+                        model_type = ModelType::ORDER_0;
+                    }
+                }
+            }
+        }
+
+        bool use_bwt = false;
+        std::vector<uint32_t> bwt_primary_indices;
+
+        if (model_type != ModelType::UNCOMPRESSED) {
+            if (bwt_preference == 1) {
+                use_bwt = true;
+                std::cout << "BWT preprocessing: ENABLED (user requested --bwt)" << std::endl;
+            } else if (bwt_preference == -1) {
+                use_bwt = false;
+                std::cout << "BWT preprocessing: DISABLED (user requested --no-bwt)" << std::endl;
+            } else {
+                double entropy = EntropyCalculator::calculate(input_data, 8192);
+                if (entropy < 6.5 && input_data.size() > 10240) {
+                    use_bwt = true;
+                    std::cout << "BWT preprocessing: ENABLED (entropy " << entropy << " < 6.5, structured data expected)" << std::endl;
+                } else {
+                    use_bwt = false;
+                    std::cout << "BWT preprocessing: DISABLED (entropy " << entropy << " or size not suitable)" << std::endl;
+                }
+            }
+
+            if (use_bwt) {
+                if (model_type == ModelType::ORDER_0) {
+                    model_type = ModelType::ORDER_0_BWT;
+                } else if (model_type == ModelType::ORDER_1) {
+                    model_type = ModelType::ORDER_1_BWT;
+                }
+            }
+        }
+
+        std::vector<uint8_t> output_data;
+
+        output_data.push_back(static_cast<uint8_t>(model_type));
+
+        uint64_t original_size = input_data.size();
+        for (int i = 0; i < 8; i++) {
+            output_data.push_back((original_size >> (i * 8)) & 0xFF);
+        }
+
+        std::vector<uint8_t> data_to_encode = input_data;
+
+        if (use_bwt) {
+            std::cout << "Applying BWT preprocessing..." << std::endl;
+            auto start_bwt = std::chrono::high_resolution_clock::now();
+
+            auto [bwt_output, primary_indices] = BWT::transform_blocks(input_data, 900*1024);
+            data_to_encode = bwt_output;
+            bwt_primary_indices = primary_indices;
+
+            auto end_bwt = std::chrono::high_resolution_clock::now();
+            auto bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_bwt - start_bwt).count();
+            std::cout << "BWT preprocessing complete (" << bwt_time << " ms)" << std::endl;
+            std::cout << "Number of BWT blocks: " << bwt_primary_indices.size() << std::endl;
+
+            uint32_t block_count = bwt_primary_indices.size();
+            for (int i = 0; i < 4; i++) {
+                output_data.push_back((block_count >> (i * 8)) & 0xFF);
+            }
+            for (uint32_t idx : bwt_primary_indices) {
+                for (int i = 0; i < 4; i++) {
+                    output_data.push_back((idx >> (i * 8)) & 0xFF);
+                }
+            }
+        }
+
+        if (model_type == ModelType::ORDER_0 || model_type == ModelType::ORDER_0_BWT) {
+            std::cout << "Using Order-0 frequency model..." << std::endl;
+            std::cout << "Encoding..." << std::endl;
+
+            FrequencyModel model;
+            model.build_from_data(data_to_encode);
+
+            RangeEncoder encoder;
+            for (uint8_t byte : data_to_encode) {
+                uint32_t cum_freq_low, cum_freq_high;
+                model.get_symbol_range(byte, cum_freq_low, cum_freq_high);
+                encoder.encode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+            }
+
+            uint32_t cum_freq_low, cum_freq_high;
+            model.get_symbol_range(FrequencyModel::get_eof_symbol(), cum_freq_low, cum_freq_high);
+            encoder.encode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+
+            encoder.finish();
+            const std::vector<uint8_t>& encoded_data = encoder.get_output();
+
+            const auto& frequencies = model.get_frequencies();
+            for (int i = 0; i < 257; i++) {
+                uint32_t freq = frequencies[i];
+                for (int j = 0; j < 4; j++) {
+                    output_data.push_back((freq >> (j * 8)) & 0xFF);
+                }
+            }
+
+            output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
+
+        } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2 || model_type == ModelType::ORDER_1_BWT) {
+            std::string model_name = (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_1_BWT) ? "Order-1" : "Order-2";
+            std::cout << "Using " << model_name << " adaptive context model..." << std::endl;
+            std::cout << "Encoding with simplified adaptive model..." << std::endl;
+
+            ContextModel model;
+            model.set_encoding_method_simple();
+            model.init_adaptive();
+
+            RangeEncoder encoder;
+
+            for (size_t idx = 0; idx < data_to_encode.size(); idx++) {
+                uint8_t byte = data_to_encode[idx];
+
+                auto steps = model.encode_symbol(byte);
+                for (const auto& step : steps) {
+                    encoder.encode_symbol(step.cum_freq_low, step.cum_freq_high, step.total_freq);
+                }
+
+                model.update_frequencies(byte);
+                model.update_history(byte);
+            }
+
+            encoder.finish();
+            const std::vector<uint8_t>& encoded_data = encoder.get_output();
+
+            output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
+        } else if (model_type == ModelType::UNCOMPRESSED) {
+            std::cout << "Storing UNCOMPRESSED (detected incompressible data)" << std::endl;
+            output_data.insert(output_data.end(), input_data.begin(), input_data.end());
+        }
+
+        std::cout << "Writing compressed file: " << output_filename << std::endl;
+        FileIO::write_file(output_filename, output_data);
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+        // Statistics
+        std::cout << "\n=== Compression Statistics ===" << std::endl;
+        std::string model_name;
+        if (model_type == ModelType::ORDER_0) model_name = "Order-0";
+        else if (model_type == ModelType::ORDER_1) model_name = "Order-1";
+        else if (model_type == ModelType::ORDER_2) model_name = "Order-2";
+        else if (model_type == ModelType::UNCOMPRESSED) model_name = "Uncompressed";
+        std::cout << "Model: " << model_name << std::endl;
+        std::cout << "Original size:    " << input_data.size() << " bytes" << std::endl;
+        std::cout << "Compressed size:  " << output_data.size() << " bytes" << std::endl;
+        std::cout << "Compression ratio: " << (100.0 * output_data.size() / input_data.size()) << "%" << std::endl;
+        std::cout << "Bits per symbol:  " << (8.0 * output_data.size() / input_data.size()) << std::endl;
+        std::cout << "Compression time: " << duration.count() << " ms" << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+
+    return 0;
+}
+
+===== END src/compressor.cpp =====
+
+===== BEGIN src/decompressor.cpp =====
+#include <iostream>
+#include <chrono>
+#include <array>
+#include "arithmetic/range_coder.h"
+#include "model/frequency_model.h"
+#include "model/context_model.h"
+#include "utils/file_io.h"
+#include "transform/bwt.h"
+
+/*
+ * Lossless Data Decompressor
+ *
+ * Supports multiple compression models:
+ * - Order-0: Simple frequency model (reads model from header)
+ * - Order-2: Adaptive context model (builds model during decompression)
+ */
+
+enum class ModelType {
+    ORDER_0 = 0,
+    ORDER_1 = 1,
+    ORDER_2 = 2,
+    ORDER_0_BWT = 3,
+    ORDER_1_BWT = 4,
+    UNCOMPRESSED = 255
+};
+
+int main(int argc, char* argv[]) {
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <input_file> <output_file>" << std::endl;
+        return 1;
+    }
+
+    std::string input_filename = argv[1];
+    std::string output_filename = argv[2];
+
+    try {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        std::cout << "Reading compressed file: " << input_filename << std::endl;
+        std::vector<uint8_t> compressed_data = FileIO::read_file(input_filename);
+        std::cout << "Compressed size: " << compressed_data.size() << " bytes" << std::endl;
+
+        if (compressed_data.size() < 9) {
+            throw std::runtime_error("Invalid compressed file: too small");
+        }
+
+        ModelType model_type = static_cast<ModelType>(compressed_data[0]);
+        std::string model_name;
+        bool use_bwt = false;
+        if (model_type == ModelType::ORDER_0) model_name = "Order-0";
+        else if (model_type == ModelType::ORDER_1) model_name = "Order-1";
+        else if (model_type == ModelType::ORDER_2) model_name = "Order-2";
+        else if (model_type == ModelType::ORDER_0_BWT) {
+            model_name = "Order-0 with BWT";
+            use_bwt = true;
+        }
+        else if (model_type == ModelType::ORDER_1_BWT) {
+            model_name = "Order-1 with BWT";
+            use_bwt = true;
+        }
+        else if (model_type == ModelType::UNCOMPRESSED) model_name = "Uncompressed";
+        else model_name = "Unknown";
+        std::cout << "Model type: " << model_name << std::endl;
+
+        uint64_t original_size = 0;
+        for (int i = 0; i < 8; i++) {
+            original_size |= (uint64_t)compressed_data[1 + i] << (i * 8);
+        }
+        std::cout << "Original size: " << original_size << " bytes" << std::endl;
+
+        std::vector<uint32_t> bwt_primary_indices;
+        size_t bwt_header_offset = 9;
+
+        if (use_bwt) {
+            uint32_t block_count = 0;
+            for (int i = 0; i < 4; i++) {
+                block_count |= (uint32_t)compressed_data[bwt_header_offset++] << (i * 8);
+            }
+            std::cout << "BWT block count: " << block_count << std::endl;
+
+            bwt_primary_indices.reserve(block_count);
+            for (uint32_t i = 0; i < block_count; i++) {
+                uint32_t idx = 0;
+                for (int j = 0; j < 4; j++) {
+                    idx |= (uint32_t)compressed_data[bwt_header_offset++] << (j * 8);
+                }
+                bwt_primary_indices.push_back(idx);
+            }
+        }
+
+        std::vector<uint8_t> output_data;
+        output_data.reserve(original_size);
+
+        if (model_type == ModelType::ORDER_0 || model_type == ModelType::ORDER_0_BWT) {
+            if (compressed_data.size() < 9 + 257 * 4) {
+                throw std::runtime_error("Invalid Order-0 compressed file: header too small");
+            }
+
+            std::array<uint32_t, 257> frequencies;
+            size_t offset = bwt_header_offset;
+            for (int i = 0; i < 257; i++) {
+                uint32_t freq = 0;
+                for (int j = 0; j < 4; j++) {
+                    freq |= (uint32_t)compressed_data[offset++] << (j * 8);
+                }
+                frequencies[i] = freq;
+            }
+
+            FrequencyModel model;
+            model.set_frequencies(frequencies);
+
+            std::vector<uint8_t> encoded_data(compressed_data.begin() + offset, compressed_data.end());
+
+            std::cout << "Decoding with Order-0 model..." << std::endl;
+            RangeDecoder decoder(encoded_data);
+
+            while (output_data.size() < original_size) {
+                uint32_t cum_freq = decoder.get_current_count(model.get_total_freq());
+                int symbol = model.find_symbol(cum_freq);
+
+                if (symbol == FrequencyModel::get_eof_symbol()) {
+                    break;
+                }
+
+                output_data.push_back(static_cast<uint8_t>(symbol));
+
+                uint32_t cum_freq_low, cum_freq_high;
+                model.get_symbol_range(symbol, cum_freq_low, cum_freq_high);
+                decoder.decode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+            }
+
+        } else if (model_type == ModelType::ORDER_1 || model_type == ModelType::ORDER_2 || model_type == ModelType::ORDER_1_BWT) {
+            std::string model_name_simple = "Order-1 (Simple)";
+            if (model_type == ModelType::ORDER_2) model_name_simple = "Order-2";
+            std::cout << "Decoding with adaptive " << model_name_simple << " context model..." << std::endl;
+
+            ContextModel model;
+            model.set_encoding_method_simple();
+            model.init_adaptive();
+
+            std::vector<uint8_t> encoded_data(compressed_data.begin() + bwt_header_offset, compressed_data.end());
+            RangeDecoder decoder(encoded_data);
+
+            while (output_data.size() < original_size) {
+                int current_order = std::min(static_cast<int>(model.get_history_size()), 2);
+
+                if (current_order > 1) {
+                    current_order = 1;
+                }
+
+                uint8_t decoded_byte = 0;
+                bool symbol_found = false;
+
+                while (current_order >= 0 && !symbol_found) {
+                    uint32_t total_freq = model.get_total_freq(current_order);
+
+                    if (total_freq == 0) {
+                        current_order--;
+                        continue;
+                    }
+
+                    uint32_t cum_freq = decoder.get_current_count(total_freq);
+                    int symbol = model.find_symbol(current_order, cum_freq);
+
+                    if (symbol < 0) {
+                        throw std::runtime_error("Symbol not found during decompression");
+                    }
+
+                    if (symbol == 256) {
+                        uint32_t cum_freq_low, cum_freq_high, total;
+                        model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
+                        decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
+
+                        current_order--;
+                    } else {
+                        uint32_t cum_freq_low, cum_freq_high, total;
+                        model.get_symbol_range(current_order, symbol, cum_freq_low, cum_freq_high, total);
+                        decoder.decode_symbol(cum_freq_low, cum_freq_high, total);
+
+                        decoded_byte = static_cast<uint8_t>(symbol);
+                        symbol_found = true;
+                    }
+                }
+
+                if (!symbol_found) {
+                    throw std::runtime_error("Failed to decode symbol");
+                }
+
+                output_data.push_back(decoded_byte);
+
+                model.update_frequencies(decoded_byte);
+                model.update_history(decoded_byte);
+            }
+        } else if (model_type == ModelType::UNCOMPRESSED) {
+            std::cout << "Copying uncompressed data..." << std::endl;
+            output_data.insert(output_data.end(),
+                             compressed_data.begin() + 9,
+                             compressed_data.end());
+        } else {
+            throw std::runtime_error("Unknown model type");
+        }
+
+        if (use_bwt) {
+            std::cout << "Applying inverse BWT..." << std::endl;
+            auto start_inv_bwt = std::chrono::high_resolution_clock::now();
+
+            output_data = BWT::inverse_transform_blocks(output_data, bwt_primary_indices, 900*1024);
+
+            auto end_inv_bwt = std::chrono::high_resolution_clock::now();
+            auto inv_bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_inv_bwt - start_inv_bwt).count();
+            std::cout << "Inverse BWT complete (" << inv_bwt_time << " ms)" << std::endl;
+        }
+
+        if (output_data.size() != original_size) {
+            std::cerr << "Warning: Decoded size (" << output_data.size()
+                      << ") doesn't match expected size (" << original_size << ")" << std::endl;
+        }
+
+        std::cout << "Writing decompressed file: " << output_filename << std::endl;
+        FileIO::write_file(output_filename, output_data);
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+        // Statistics
+        std::cout << "\n=== Decompression Statistics ===" << std::endl;
+        std::cout << "Compressed size:    " << compressed_data.size() << " bytes" << std::endl;
+        std::cout << "Decompressed size:  " << output_data.size() << " bytes" << std::endl;
+        std::cout << "Decompression time: " << duration.count() << " ms" << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+
+    return 0;
+}
+
+===== END src/decompressor.cpp =====
+
+===== BEGIN src/model/context_model.cpp =====
+#include "model/context_model.h"
+#include <algorithm>
+#include <stdexcept>
+#include <iostream>
+
+const int ContextModel::ALPHABET_SIZE;
+const int ContextModel::ESCAPE_SYMBOL;
+const int ContextModel::EOF_SYMBOL;
+const int ContextModel::EXTENDED_ALPHABET;
+const int ContextModel::MAX_ORDER;
+
+ContextModel::ContextModel() {
+    order0_context = std::make_unique<Context>();
+    encoding_method_ = EncodingMethod::SIMPLE;
+    reset();
+}
+
+void ContextModel::reset() {
+    history.clear();
+}
+
+uint32_t ContextModel::get_context_id_order2() const {
+    if (history.size() < 2) return 0;
+    return ((uint32_t)history[history.size() - 2] << 8) | history[history.size() - 1];
+}
+
+uint32_t ContextModel::get_context_id_order1() const {
+    if (history.size() < 1) return 0;
+    return history[history.size() - 1];
+}
+
+ContextModel::Context* ContextModel::get_context(int order) {
+    if (order == 0) {
+        return order0_context.get();
+    } else if (order == 1) {
+        if (history.size() < 1) return nullptr;
+        uint32_t ctx_id = get_context_id_order1();
+        return order1_contexts[ctx_id].get();
+    }
+    return nullptr;
+}
+
+void ContextModel::ensure_context_exists(int order) {
+    if (order == 0) {
+        return;
+    } else if (order == 1) {
+        if (history.size() < 1) return;
+        uint32_t ctx_id = get_context_id_order1();
+        if (!order1_contexts[ctx_id]) {
+            uint8_t context_byte = history[history.size() - 1];
+            if (order0_context->frequencies.find(context_byte) != order0_context->frequencies.end() &&
+                order0_context->frequencies[context_byte] >= 3) {
+                order1_contexts[ctx_id] = std::make_unique<Context>();
+            }
+        }
+    }
+}
+
+void ContextModel::init_adaptive() {
+    for (int i = 0; i < ALPHABET_SIZE; i++) {
+        order0_context->frequencies[i] = 1;
+    }
+    order0_context->frequencies[EOF_SYMBOL] = 1;
+    order0_context->total_freq = ALPHABET_SIZE + 1;
+    order0_context->invalidate_cache();
+
+    reset();
+
+    std::cout << "Adaptive context model initialized (";
+    std::cout << (encoding_method_ == EncodingMethod::SIMPLE ? "Simple" : "PPM Method C");
+    std::cout << " mode)" << std::endl;
+}
+
+void ContextModel::init_adaptive_with_warmup(const std::vector<uint8_t>& data, size_t warmup_size) {
+    for (int i = 0; i < ALPHABET_SIZE; i++) {
+        order0_context->frequencies[i] = 1;
+    }
+    order0_context->frequencies[EOF_SYMBOL] = 1;
+    order0_context->total_freq = ALPHABET_SIZE + 1;
+
+    size_t scan_size = std::min(warmup_size, data.size());
+
+    for (size_t i = 0; i < scan_size; i++) {
+        uint8_t byte = data[i];
+        order0_context->frequencies[byte] += 2;
+        order0_context->total_freq += 2;
+    }
+
+    order0_context->invalidate_cache();
+    reset();
+
+    std::cout << "Adaptive context model initialized with " << scan_size
+              << " byte warmup" << std::endl;
+}
+
+void ContextModel::build_from_data(const std::vector<uint8_t>& data) {
+    for (int i = 0; i < ALPHABET_SIZE; i++) {
+        order0_context->frequencies[i] = 1;
+    }
+    order0_context->frequencies[EOF_SYMBOL] = 1;
+    order0_context->total_freq = ALPHABET_SIZE + 1;
+
+    reset();
+
+    for (size_t i = 0; i < data.size(); i++) {
+        uint8_t byte = data[i];
+
+        if (history.size() >= 1) {
+            ensure_context_exists(1);
+            ContextModel::Context* ctx = get_context(1);
+            if (ctx) {
+                if (ctx->frequencies.find(byte) == ctx->frequencies.end()) {
+                    ctx->frequencies[byte] = 0;
+                }
+                ctx->frequencies[byte]++;
+                ctx->total_freq++;
+            }
+        }
+
+        if (order0_context->frequencies.find(byte) != order0_context->frequencies.end()) {
+            order0_context->frequencies[byte]++;
+            order0_context->total_freq++;
+        }
+
+        update_history(byte);
+    }
+
+    for (auto& ctx_ptr : order1_contexts) {
+        if (ctx_ptr && ctx_ptr->frequencies.size() > 0) {
+            int unique_symbols = ctx_ptr->frequencies.size();
+            uint32_t escape_freq = std::max(1, unique_symbols / 4);
+            ctx_ptr->frequencies[ESCAPE_SYMBOL] = escape_freq;
+            ctx_ptr->total_freq += escape_freq;
+            ctx_ptr->invalidate_cache();
+        }
+    }
+
+    order0_context->invalidate_cache();
+    reset();
+
+    std::cout << "Context model built successfully" << std::endl;
+    print_statistics();
+}
+
+void ContextModel::update_history(uint8_t byte) {
+    if (history.size() >= MAX_ORDER) {
+        std::rotate(history.begin(), history.begin() + 1, history.end());
+        history[MAX_ORDER - 1] = byte;
+    } else {
+        history.push_back(byte);
+    }
+}
+
+void ContextModel::update_frequencies(uint8_t byte) {
+    int max_order = (history.size() >= 1) ? 1 : 0;
+
+    for (int order = max_order; order >= 0; order--) {
+        if (order == 0) {
+            order0_context->frequencies[byte]++;
+            order0_context->total_freq++;
+            order0_context->invalidate_cache();
+        } else {
+            ensure_context_exists(order);
+            ContextModel::Context* ctx = get_context(order);
+
+            if (ctx) {
+                if (ctx->frequencies.find(byte) == ctx->frequencies.end()) {
+                    ctx->frequencies[byte] = 1;
+                    ctx->total_freq += 1;
+
+                    if (ctx->frequencies.find(ESCAPE_SYMBOL) == ctx->frequencies.end()) {
+                        ctx->frequencies[ESCAPE_SYMBOL] = 1;
+                        ctx->total_freq += 1;
+                    } else {
+                        int unique_symbols = ctx->frequencies.size() - 1;
+                        uint32_t new_escape_freq = std::max(1, unique_symbols / 4);
+                        uint32_t old_escape_freq = ctx->frequencies[ESCAPE_SYMBOL];
+
+                        ctx->total_freq = ctx->total_freq - old_escape_freq + new_escape_freq;
+                        ctx->frequencies[ESCAPE_SYMBOL] = new_escape_freq;
+                    }
+                } else {
+                    ctx->frequencies[byte]++;
+                    ctx->total_freq++;
+                }
+
+                ctx->invalidate_cache();
+            }
+        }
+    }
+}
+
+// SRP: Main encoding dispatcher (DIP: depends on abstract strategy)
+std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol(uint8_t byte) {
+    if (encoding_method_ == EncodingMethod::SIMPLE) {
+        return encode_symbol_simple(byte);
+    } else {
+        return encode_symbol_with_exclusions(byte);
+    }
+}
+
+// Simplified encoding without exclusions
+std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_simple(uint8_t byte) {
+    std::vector<EncodingStep> steps;
+
+    int current_order = std::min(static_cast<int>(history.size()), MAX_ORDER);
+
+    if (current_order > 1) {
+        current_order = 1;
+    }
+
+    while (current_order >= 0) {
+        Context* ctx = get_context(current_order);
+
+        if (ctx && ctx->has_symbol(byte)) {
+            EncodingStep step;
+            step.symbol = byte;
+            get_symbol_range(current_order, byte,
+                           step.cum_freq_low, step.cum_freq_high, step.total_freq);
+            steps.push_back(step);
+            return steps;
+        }
+
+        if (current_order > 0 && ctx) {
+            EncodingStep escape_step;
+            escape_step.symbol = ESCAPE_SYMBOL;
+            get_symbol_range(current_order, ESCAPE_SYMBOL,
+                           escape_step.cum_freq_low, escape_step.cum_freq_high,
+                           escape_step.total_freq);
+            steps.push_back(escape_step);
+        }
+
+        current_order--;
+    }
+
+    EncodingStep step;
+    step.symbol = byte;
+    get_symbol_range(0, byte,
+                   step.cum_freq_low, step.cum_freq_high, step.total_freq);
+    steps.push_back(step);
+
+    return steps;
+}
+
+std::vector<ContextModel::EncodingStep> ContextModel::encode_symbol_with_exclusions(uint8_t byte) {
+    std::vector<EncodingStep> steps;
+    std::vector<int> excluded_symbols;  // PPM Method C: track exclusions
+
+    // Try Order-2 first
+    int current_order = (history.size() >= 2) ? 2 : (history.size() >= 1) ? 1 : 0;
+
+    while (current_order >= 0) {
+        ContextModel::Context* ctx = get_context(current_order);
+
+        if (ctx && ctx->has_symbol(byte)) {
+            // Symbol found in this context, encode it (with exclusions from higher orders)
+            EncodingStep step;
+            step.symbol = byte;
+
+            if (excluded_symbols.empty()) {
+                // No exclusions, use normal encoding
+                get_symbol_range(current_order, byte,
+                               step.cum_freq_low, step.cum_freq_high, step.total_freq);
+            } else {
+                // Use exclusion-based encoding (PPM Method C)
+                get_symbol_range_with_exclusions(current_order, byte, excluded_symbols,
+                                               step.cum_freq_low, step.cum_freq_high, step.total_freq);
+            }
+
+            steps.push_back(step);
+            break;
+        } else if (ctx && current_order > 0) {
+            // Symbol not found at this order
+            // Encode escape (NOTE: escape symbol itself is NOT affected by exclusions)
+            EncodingStep escape_step;
+            escape_step.symbol = ESCAPE_SYMBOL;
+            get_symbol_range(current_order, ESCAPE_SYMBOL,
+                           escape_step.cum_freq_low, escape_step.cum_freq_high,
+                           escape_step.total_freq);
+            steps.push_back(escape_step);
+
+            // PPM Method C: After escaping, add all symbols seen at this order to exclusion list
+            for (const auto& pair : ctx->frequencies) {
+                if (pair.first != ESCAPE_SYMBOL && pair.first != EOF_SYMBOL) {
+                    excluded_symbols.push_back(pair.first);
+                }
+            }
+
+            current_order--;
+        } else {
+            // Order-0: symbol must exist (all symbols initialized)
+            EncodingStep step;
+            step.symbol = byte;
+
+            if (excluded_symbols.empty()) {
+                get_symbol_range(0, byte,
+                               step.cum_freq_low, step.cum_freq_high, step.total_freq);
+            } else {
+                get_symbol_range_with_exclusions(0, byte, excluded_symbols,
+                                               step.cum_freq_low, step.cum_freq_high, step.total_freq);
+            }
+
+            steps.push_back(step);
+            break;
+        }
+    }
+
+    return steps;
+}
+
+void ContextModel::get_symbol_range(int order, int symbol,
+                                   uint32_t& cum_freq_low,
+                                   uint32_t& cum_freq_high,
+                                   uint32_t& total_freq) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+
+    if (!ctx || ctx->frequencies.empty()) {
+        throw std::runtime_error("Context not found or empty");
+    }
+
+    // Ensure cache is valid (rebuilds only if dirty)
+    ctx->ensure_cache_valid();
+
+    // Binary search for the symbol in sorted cached_symbols
+    auto it = std::lower_bound(ctx->cached_symbols.begin(), ctx->cached_symbols.end(), symbol);
+    if (it == ctx->cached_symbols.end() || *it != symbol) {
+        throw std::runtime_error("Symbol not found in context");
+    }
+
+    size_t idx = std::distance(ctx->cached_symbols.begin(), it);
+    cum_freq_low = ctx->cached_cumulative[idx];
+    cum_freq_high = (idx + 1 < ctx->cached_cumulative.size()) ?
+                    ctx->cached_cumulative[idx + 1] : ctx->total_freq;
+    total_freq = ctx->total_freq;
+}
+
+void ContextModel::Context::ensure_cache_valid() {
+    if (!cumulative_dirty) {
+        return;  // Cache is still valid
+    }
+
+    // Rebuild cache
+    cached_symbols.clear();
+    cached_cumulative.clear();
+
+    // Sort symbols by their numeric value for consistency
+    for (const auto& pair : frequencies) {
+        cached_symbols.push_back(pair.first);
+    }
+    std::sort(cached_symbols.begin(), cached_symbols.end());
+
+    // Build cumulative frequencies
+    uint32_t cum = 0;
+    for (int symbol : cached_symbols) {
+        cached_cumulative.push_back(cum);
+        cum += frequencies.at(symbol);
+    }
+
+    cumulative_dirty = false;  // Mark cache as clean
+}
+
+void ContextModel::build_cumulative_freq(const ContextModel::Context* ctx,
+                                        std::vector<int>& symbols,
+                                        std::vector<uint32_t>& cumulative) const {
+    // This method is now deprecated but kept for compatibility
+    // It just uses the cached data
+    ContextModel::Context* mutable_ctx = const_cast<ContextModel::Context*>(ctx);
+    mutable_ctx->ensure_cache_valid();
+    symbols = ctx->cached_symbols;
+    cumulative = ctx->cached_cumulative;
+}
+
+int ContextModel::find_symbol(int order, uint32_t cum_freq) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+
+    if (!ctx || ctx->frequencies.empty()) {
+        return -1;
+    }
+
+    // Ensure cache is valid (rebuilds only if dirty)
+    ctx->ensure_cache_valid();
+
+    // Binary search for the cumulative frequency range
+    // Find the largest cumulative value <= cum_freq
+    auto it = std::upper_bound(ctx->cached_cumulative.begin(), ctx->cached_cumulative.end(), cum_freq);
+
+    if (it == ctx->cached_cumulative.begin()) {
+        return -1;  // cum_freq is before first symbol (shouldn't happen)
+    }
+
+    --it;  // Move back to the actual symbol
+    size_t idx = std::distance(ctx->cached_cumulative.begin(), it);
+
+    // Verify the range
+    uint32_t low = ctx->cached_cumulative[idx];
+    uint32_t high = (idx + 1 < ctx->cached_cumulative.size()) ?
+                    ctx->cached_cumulative[idx + 1] : ctx->total_freq;
+
+    if (cum_freq >= low && cum_freq < high) {
+        return ctx->cached_symbols[idx];
+    }
+
+    return -1;  // Not found (should not happen)
+}
+
+bool ContextModel::has_symbol_in_context(int order, int symbol) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+    if (!ctx) return false;
+    return ctx->has_symbol(symbol);
+}
+
+uint32_t ContextModel::get_total_freq(int order) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+    if (!ctx) return 0;
+    return ctx->total_freq;
+}
+
+void ContextModel::print_statistics() const {
+    std::cout << "=== Context Model Statistics ===" << std::endl;
+
+    int order1_count = 0;
+    for (const auto& ctx : order1_contexts) {
+        if (ctx && ctx->frequencies.size() > 0) order1_count++;
+    }
+
+    std::cout << "Order-1 contexts: " << order1_count << " / 256" << std::endl;
+    std::cout << "Order-0 symbols: " << order0_context->frequencies.size() << std::endl;
+}
+
+// PPM Method C: Get symbol range with exclusions
+void ContextModel::get_symbol_range_with_exclusions(int order, int symbol,
+                                                   const std::vector<int>& excluded_symbols,
+                                                   uint32_t& cum_freq_low,
+                                                   uint32_t& cum_freq_high,
+                                                   uint32_t& total_freq) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+
+    if (!ctx || ctx->frequencies.empty()) {
+        throw std::runtime_error("Context not found or empty in get_symbol_range_with_exclusions");
+    }
+
+    // Build temporary frequency distribution excluding specified symbols
+    std::vector<int> valid_symbols;
+    std::vector<uint32_t> valid_cumulative;
+
+    uint32_t cum = 0;
+    total_freq = 0;
+
+    // First, calculate total frequency excluding excluded symbols
+    for (const auto& pair : ctx->frequencies) {
+        bool is_excluded = false;
+        for (int excluded : excluded_symbols) {
+            if (pair.first == excluded) {
+                is_excluded = true;
+                break;
+            }
+        }
+
+        if (!is_excluded) {
+            total_freq += pair.second;
+        }
+    }
+
+    if (total_freq == 0) {
+        throw std::runtime_error("All symbols excluded in get_symbol_range_with_exclusions");
+    }
+
+    // Build cumulative frequencies for non-excluded symbols (sorted order)
+    std::vector<std::pair<int, uint32_t>> sorted_freqs;
+    for (const auto& pair : ctx->frequencies) {
+        bool is_excluded = false;
+        for (int excluded : excluded_symbols) {
+            if (pair.first == excluded) {
+                is_excluded = true;
+                break;
+            }
+        }
+
+        if (!is_excluded) {
+            sorted_freqs.push_back({pair.first, pair.second});
+        }
+    }
+
+    // Sort by symbol value for consistency
+    std::sort(sorted_freqs.begin(), sorted_freqs.end(),
+             [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // Build cumulative frequency array
+    for (const auto& pair : sorted_freqs) {
+        valid_symbols.push_back(pair.first);
+        valid_cumulative.push_back(cum);
+        cum += pair.second;
+    }
+
+    // Find the requested symbol
+    auto it = std::find(valid_symbols.begin(), valid_symbols.end(), symbol);
+    if (it == valid_symbols.end()) {
+        throw std::runtime_error("Symbol not found in excluded distribution");
+    }
+
+    size_t idx = std::distance(valid_symbols.begin(), it);
+    cum_freq_low = valid_cumulative[idx];
+    cum_freq_high = (idx + 1 < valid_cumulative.size()) ?
+                    valid_cumulative[idx + 1] : total_freq;
+}
+
+// PPM Method C: Find symbol with exclusions
+int ContextModel::find_symbol_with_exclusions(int order, uint32_t cum_freq,
+                                             const std::vector<int>& excluded_symbols) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+
+    if (!ctx || ctx->frequencies.empty()) {
+        return -1;
+    }
+
+    // Build temporary frequency distribution excluding specified symbols
+    std::vector<int> valid_symbols;
+    std::vector<uint32_t> valid_cumulative;
+
+    uint32_t cum = 0;
+    uint32_t total_freq = 0;
+
+    // Calculate total frequency excluding excluded symbols
+    for (const auto& pair : ctx->frequencies) {
+        bool is_excluded = false;
+        for (int excluded : excluded_symbols) {
+            if (pair.first == excluded) {
+                is_excluded = true;
+                break;
+            }
+        }
+
+        if (!is_excluded) {
+            total_freq += pair.second;
+        }
+    }
+
+    if (total_freq == 0) {
+        return -1;
+    }
+
+    // Build cumulative frequencies for non-excluded symbols (sorted order)
+    std::vector<std::pair<int, uint32_t>> sorted_freqs;
+    for (const auto& pair : ctx->frequencies) {
+        bool is_excluded = false;
+        for (int excluded : excluded_symbols) {
+            if (pair.first == excluded) {
+                is_excluded = true;
+                break;
+            }
+        }
+
+        if (!is_excluded) {
+            sorted_freqs.push_back({pair.first, pair.second});
+        }
+    }
+
+    // Sort by symbol value for consistency
+    std::sort(sorted_freqs.begin(), sorted_freqs.end(),
+             [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // Build cumulative frequency array
+    for (const auto& pair : sorted_freqs) {
+        valid_symbols.push_back(pair.first);
+        valid_cumulative.push_back(cum);
+        cum += pair.second;
+    }
+
+    // Binary search for the cumulative frequency range
+    auto it = std::upper_bound(valid_cumulative.begin(), valid_cumulative.end(), cum_freq);
+
+    if (it == valid_cumulative.begin()) {
+        return -1;  // cum_freq is before first symbol
+    }
+
+    --it;  // Move back to the actual symbol
+    size_t idx = std::distance(valid_cumulative.begin(), it);
+
+    // Verify the range
+    uint32_t low = valid_cumulative[idx];
+    uint32_t high = (idx + 1 < valid_cumulative.size()) ?
+                    valid_cumulative[idx + 1] : total_freq;
+
+    if (cum_freq >= low && cum_freq < high) {
+        return valid_symbols[idx];
+    }
+
+    return -1;  // Not found
+}
+
+// Helper: Get all symbols in a context (for PPM exclusions)
+std::vector<int> ContextModel::get_context_symbols(int order) const {
+    std::vector<int> symbols;
+
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+    if (!ctx) {
+        return symbols;  // Empty if context doesn't exist
+    }
+
+    // Return all symbols except escape and EOF
+    for (const auto& pair : ctx->frequencies) {
+        if (pair.first != ESCAPE_SYMBOL && pair.first != EOF_SYMBOL) {
+            symbols.push_back(pair.first);
+        }
+    }
+
+    return symbols;
+}
+
+// Get total frequency with exclusions
+uint32_t ContextModel::get_total_freq_with_exclusions(int order, const std::vector<int>& excluded_symbols) const {
+    ContextModel::Context* ctx = const_cast<ContextModel*>(this)->get_context(order);
+    if (!ctx) return 0;
+
+    uint32_t total = 0;
+    for (const auto& pair : ctx->frequencies) {
+        bool is_excluded = false;
+        for (int excluded : excluded_symbols) {
+            if (pair.first == excluded) {
+                is_excluded = true;
+                break;
+            }
+        }
+
+        if (!is_excluded) {
+            total += pair.second;
+        }
+    }
+
+    return total;
+}
+
+
+===== END src/model/context_model.cpp =====
+
+===== BEGIN src/model/frequency_model.cpp =====
+#include "model/frequency_model.h"
+#include <algorithm>
+#include <stdexcept>
+
+FrequencyModel::FrequencyModel() : total_freq(0) {
+    frequencies.fill(0);
+    cumulative_freq.fill(0);
+}
+
+void FrequencyModel::build_from_data(const std::vector<uint8_t>& data) {
+    frequencies.fill(0);
+
+    for (uint8_t byte : data) {
+        frequencies[byte]++;
+    }
+
+    frequencies[EOF_SYMBOL] = 1;
+
+    for (int i = 0; i < ALPHABET_SIZE; i++) {
+        if (frequencies[i] == 0) {
+            frequencies[i] = 1;
+        }
+    }
+
+    build_cumulative_freq();
+}
+
+void FrequencyModel::build_cumulative_freq() {
+    cumulative_freq[0] = 0;
+    for (int i = 1; i < ALPHABET_SIZE; i++) {
+        cumulative_freq[i] = cumulative_freq[i - 1] + frequencies[i - 1];
+    }
+    total_freq = cumulative_freq[ALPHABET_SIZE - 1] + frequencies[ALPHABET_SIZE - 1];
+}
+
+void FrequencyModel::get_symbol_range(int symbol, uint32_t& cum_freq_low, uint32_t& cum_freq_high) const {
+    if (symbol < 0 || symbol >= ALPHABET_SIZE) {
+        throw std::out_of_range("Symbol out of range");
+    }
+    cum_freq_low = cumulative_freq[symbol];
+    cum_freq_high = cumulative_freq[symbol] + frequencies[symbol];
+}
+
+int FrequencyModel::find_symbol(uint32_t cum_freq) const {
+    int low = 0;
+    int high = ALPHABET_SIZE - 1;
+
+    while (low < high) {
+        int mid = (low + high + 1) / 2;
+        if (cumulative_freq[mid] > cum_freq) {
+            high = mid - 1;
+        } else {
+            low = mid;
+        }
+    }
+
+    return low;
+}
+
+void FrequencyModel::set_frequencies(const std::array<uint32_t, ALPHABET_SIZE>& freq) {
+    frequencies = freq;
+    build_cumulative_freq();
+}
+
+===== END src/model/frequency_model.cpp =====
+
+===== BEGIN src/transform/bwt.cpp =====
+#include "transform/bwt.h"
+#include <algorithm>
+#include <stdexcept>
+
+/*
+ * BWT Implementation
+ *
+ * Uses O(n log n) prefix-doubling suffix array construction for cyclic
+ * rotations. Block-based processing for large files (900KB blocks,
+ * similar to bzip2).
+ */
+
+// ============================================================================
+// Suffix Array Construction
+// ============================================================================
+
+std::vector<uint32_t> BWT::build_suffix_array_prefix_doubling(const std::vector<uint8_t>& data) {
+    if (data.empty()) {
+        return std::vector<uint32_t>();
+    }
+
+    uint32_t n = data.size();
+    std::vector<uint32_t> suffix_array(n);
+    std::vector<uint32_t> equivalence_class(n);
+    std::vector<uint32_t> next_suffix_array(n);
+    std::vector<uint32_t> next_equivalence_class(n);
+    std::vector<uint32_t> count(std::max<size_t>(256, n), 0);
+
+    for (uint32_t i = 0; i < n; i++) {
+        count[data[i]]++;
+    }
+
+    for (size_t i = 1; i < 256; i++) {
+        count[i] += count[i - 1];
+    }
+
+    for (int i = static_cast<int>(n) - 1; i >= 0; i--) {
+        uint8_t byte = data[i];
+        suffix_array[--count[byte]] = i;
+    }
+
+    equivalence_class[suffix_array[0]] = 0;
+    uint32_t class_count = 1;
+    for (uint32_t i = 1; i < n; i++) {
+        if (data[suffix_array[i]] != data[suffix_array[i - 1]]) {
+            class_count++;
+        }
+        equivalence_class[suffix_array[i]] = class_count - 1;
+    }
+
+    for (uint32_t shift = 1; shift < n; shift <<= 1) {
+        for (uint32_t i = 0; i < n; i++) {
+            next_suffix_array[i] = (suffix_array[i] + n - shift) % n;
+        }
+
+        std::fill(count.begin(), count.begin() + class_count, 0);
+        for (uint32_t i = 0; i < n; i++) {
+            count[equivalence_class[next_suffix_array[i]]]++;
+        }
+        for (uint32_t i = 1; i < class_count; i++) {
+            count[i] += count[i - 1];
+        }
+        for (int i = static_cast<int>(n) - 1; i >= 0; i--) {
+            uint32_t start = next_suffix_array[i];
+            uint32_t current_class = equivalence_class[start];
+            suffix_array[--count[current_class]] = start;
+        }
+
+        next_equivalence_class[suffix_array[0]] = 0;
+        uint32_t next_class_count = 1;
+        for (uint32_t i = 1; i < n; i++) {
+            uint32_t current = suffix_array[i];
+            uint32_t previous = suffix_array[i - 1];
+
+            std::pair<uint32_t, uint32_t> current_pair = {
+                equivalence_class[current],
+                equivalence_class[(current + shift) % n]
+            };
+            std::pair<uint32_t, uint32_t> previous_pair = {
+                equivalence_class[previous],
+                equivalence_class[(previous + shift) % n]
+            };
+
+            if (current_pair != previous_pair) {
+                next_class_count++;
+            }
+            next_equivalence_class[current] = next_class_count - 1;
+        }
+
+        equivalence_class.swap(next_equivalence_class);
+        class_count = next_class_count;
+
+        if (class_count == n) {
+            break;
+        }
+    }
+
+    return suffix_array;
+}
+
+// ============================================================================
+// Forward BWT Transform
+// ============================================================================
+
+std::pair<std::vector<uint8_t>, uint32_t>
+BWT::transform(const std::vector<uint8_t>& input) {
+    if (input.empty()) {
+        return {std::vector<uint8_t>(), 0};
+    }
+
+    uint32_t n = input.size();
+    std::vector<uint32_t> suffix_array = build_suffix_array_prefix_doubling(input);
+
+    std::vector<uint8_t> bwt_output(n);
+    uint32_t primary_index = 0;
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t suffix_start = suffix_array[i];
+
+        if (suffix_start == 0) {
+            primary_index = i;
+        }
+
+        uint32_t prev_pos = (suffix_start == 0) ? (n - 1) : (suffix_start - 1);
+        bwt_output[i] = input[prev_pos];
+    }
+
+    return {bwt_output, primary_index};
+}
+
+// ============================================================================
+// Inverse BWT Transform
+// ============================================================================
+
+std::vector<uint8_t>
+BWT::inverse_transform(const std::vector<uint8_t>& bwt_data, uint32_t primary_index) {
+    if (bwt_data.empty()) {
+        return std::vector<uint8_t>();
+    }
+
+    uint32_t n = bwt_data.size();
+
+    if (primary_index >= n) {
+        throw std::runtime_error("Invalid primary index for BWT inverse transform");
+    }
+
+    std::vector<uint32_t> count(256, 0);
+    for (uint8_t c : bwt_data) {
+        count[c]++;
+    }
+
+    std::vector<uint32_t> cumsum(256, 0);
+    uint32_t sum = 0;
+    for (int i = 0; i < 256; i++) {
+        cumsum[i] = sum;
+        sum += count[i];
+    }
+
+    // Build LF mapping: maps each position in last column to its position in first column
+    std::vector<uint32_t> lf_mapping(n);
+    std::vector<uint32_t> temp_cumsum = cumsum;
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t c = bwt_data[i];
+        lf_mapping[i] = temp_cumsum[c];
+        temp_cumsum[c]++;
+    }
+
+    // Reconstruct original by following LF mapping
+    std::vector<uint8_t> output(n);
+    uint32_t idx = primary_index;
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t c = bwt_data[idx];
+        output[n - 1 - i] = c;
+        idx = lf_mapping[idx];
+    }
+
+    return output;
+}
+
+// ============================================================================
+// Block-based Processing
+// ============================================================================
+
+std::pair<std::vector<uint8_t>, std::vector<uint32_t>>
+BWT::transform_blocks(const std::vector<uint8_t>& input, size_t block_size) {
+    if (input.empty()) {
+        return {std::vector<uint8_t>(), std::vector<uint32_t>()};
+    }
+
+    size_t num_blocks = (input.size() + block_size - 1) / block_size;
+
+    std::vector<uint8_t> all_bwt_output;
+    std::vector<uint32_t> all_primary_indices;
+
+    all_bwt_output.reserve(input.size());
+    all_primary_indices.reserve(num_blocks);
+
+    for (size_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        size_t start = block_idx * block_size;
+        size_t end = std::min(start + block_size, input.size());
+
+        std::vector<uint8_t> block(input.begin() + start, input.begin() + end);
+        auto [bwt_output, primary_index] = transform(block);
+
+        all_bwt_output.insert(all_bwt_output.end(), bwt_output.begin(), bwt_output.end());
+        all_primary_indices.push_back(primary_index);
+    }
+
+    return {all_bwt_output, all_primary_indices};
+}
+
+std::vector<uint8_t>
+BWT::inverse_transform_blocks(const std::vector<uint8_t>& bwt_data,
+                               const std::vector<uint32_t>& primary_indices,
+                               size_t block_size) {
+    if (bwt_data.empty() || primary_indices.empty()) {
+        return std::vector<uint8_t>();
+    }
+
+    size_t num_blocks = primary_indices.size();
+    std::vector<uint8_t> output;
+    output.reserve(bwt_data.size());
+
+    for (size_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        size_t start = block_idx * block_size;
+        size_t end = std::min(start + block_size, bwt_data.size());
+        size_t current_block_size = end - start;
+
+        if (end > bwt_data.size()) {
+            throw std::runtime_error("BWT block processing error: block boundaries exceed data size");
+        }
+
+        std::vector<uint8_t> block_bwt(bwt_data.begin() + start,
+                                       bwt_data.begin() + end);
+
+        if (block_bwt.size() != current_block_size) {
+            throw std::runtime_error("BWT block processing error: block size mismatch");
+        }
+
+        std::vector<uint8_t> block_output = inverse_transform(block_bwt, primary_indices[block_idx]);
+        output.insert(output.end(), block_output.begin(), block_output.end());
+    }
+
+    return output;
+}
+
+// ============================================================================
+// Helper: Validate Suffix Array
+// ============================================================================
+
+bool BWT::validate_suffix_array(const std::vector<uint8_t>& data,
+                                const std::vector<uint32_t>& sa) {
+    uint32_t n = data.size();
+
+    if (sa.size() != n) {
+        return false;
+    }
+
+    std::vector<bool> seen(n, false);
+    for (uint32_t idx : sa) {
+        if (idx >= n || seen[idx]) {
+            return false;
+        }
+        seen[idx] = true;
+    }
+
+    for (uint32_t i = 1; i < n; i++) {
+        uint32_t prev_suffix = sa[i - 1];
+        uint32_t curr_suffix = sa[i];
+
+        for (uint32_t offset = 0; offset < n; offset++) {
+            uint8_t prev_char = data[(prev_suffix + offset) % n];
+            uint8_t curr_char = data[(curr_suffix + offset) % n];
+
+            if (prev_char < curr_char) {
+                break;
+            }
+
+            if (prev_char > curr_char) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+===== END src/transform/bwt.cpp =====
+
+===== BEGIN src/utils/entropy_calculator.cpp =====
+#include "utils/entropy_calculator.h"
+#include <cmath>
+#include <array>
+#include <algorithm>
+
+double EntropyCalculator::calculate(const std::vector<uint8_t>& data, size_t sample_size) {
+    if (data.empty()) {
+        return 0.0;
+    }
+
+    // Determine actual sample size
+    size_t actual_sample_size = sample_size;
+    if (sample_size == 0 || sample_size > data.size()) {
+        actual_sample_size = data.size();
+    }
+
+    // Count byte frequencies
+    std::array<uint64_t, 256> frequencies = {0};
+    for (size_t i = 0; i < actual_sample_size; i++) {
+        frequencies[data[i]]++;
+    }
+
+    // Calculate Shannon entropy: H = -Σ p(x) * log2(p(x))
+    double entropy = 0.0;
+    for (int i = 0; i < 256; i++) {
+        if (frequencies[i] > 0) {
+            double probability = static_cast<double>(frequencies[i]) / actual_sample_size;
+            entropy -= probability * std::log2(probability);
+        }
+    }
+
+    return entropy;
+}
+
+bool EntropyCalculator::is_compressible(const std::vector<uint8_t>& data, double threshold) {
+    double entropy = calculate(data);
+    return entropy < threshold;
+}
+
+EntropyCalculator::DataType EntropyCalculator::classify(const std::vector<uint8_t>& data) {
+    double entropy = calculate(data);
+
+    if (entropy < 5.0) {
+        return DataType::HIGHLY_COMPRESSIBLE;
+    } else if (entropy < 7.0) {
+        return DataType::COMPRESSIBLE;
+    } else {
+        return DataType::INCOMPRESSIBLE;
+    }
+}
+
+===== END src/utils/entropy_calculator.cpp =====
+
+===== BEGIN src/utils/file_io.cpp =====
+#include "utils/file_io.h"
+#include <fstream>
+#include <stdexcept>
+#include <sstream>
+
+namespace FileIO {
+
+std::vector<uint8_t> read_file(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file) {
+        throw std::runtime_error("Cannot open file for reading: " + filename);
+    }
+
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> buffer(size);
+    if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+        throw std::runtime_error("Error reading file: " + filename);
+    }
+
+    return buffer;
+}
+
+void write_file(const std::string& filename, const std::vector<uint8_t>& data) {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Cannot open file for writing: " + filename);
+    }
+
+    if (!file.write(reinterpret_cast<const char*>(data.data()), data.size())) {
+        throw std::runtime_error("Error writing file: " + filename);
+    }
+}
+
+size_t get_file_size(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file) {
+        throw std::runtime_error("Cannot open file: " + filename);
+    }
+    return file.tellg();
+}
+
+} // namespace FileIO
+
+===== END src/utils/file_io.cpp =====
+
+===== BEGIN tests/test_bwt.cpp =====
+#include <iostream>
+#include <string>
+#include <vector>
+#include <cassert>
+#include "transform/bwt.h"
+
+// Helper to convert string to vector<uint8_t>
+std::vector<uint8_t> str_to_vec(const std::string& s) {
+    return std::vector<uint8_t>(s.begin(), s.end());
+}
+
+// Helper to convert vector<uint8_t> to string
+std::string vec_to_str(const std::vector<uint8_t>& v) {
+    return std::string(v.begin(), v.end());
+}
+
+void test_basic_transform() {
+    std::cout << "Test 1: Basic Transform..." << std::endl;
+
+    std::string input = "banana";
+    auto input_vec = str_to_vec(input);
+
+    auto [bwt_output, primary_index] = BWT::transform(input_vec);
+    std::string bwt_str = vec_to_str(bwt_output);
+
+    std::cout << "  Input: " << input << std::endl;
+    std::cout << "  BWT output: " << bwt_str << std::endl;
+    std::cout << "  Primary index: " << primary_index << std::endl;
+
+    // The exact BWT output depends on how we handle the sentinel
+    // But it should be a permutation of input characters
+    assert(bwt_output.size() == input_vec.size());
+    std::cout << "  ✓ Passed\n" << std::endl;
+}
+
+void test_invertibility() {
+    std::cout << "Test 2: Invertibility..." << std::endl;
+
+    std::vector<std::string> test_strings = {
+        "banana",
+        "mississippi",
+        "abracadabra",
+        "hello world",
+        "aaaaaaaaaa",
+        "abcdefghij",
+        "The quick brown fox jumps over the lazy dog"
+    };
+
+    for (const auto& test_str : test_strings) {
+        auto input_vec = str_to_vec(test_str);
+
+        // Forward transform
+        auto [bwt_output, primary_index] = BWT::transform(input_vec);
+
+        // Inverse transform
+        auto reconstructed = BWT::inverse_transform(bwt_output, primary_index);
+
+        // Verify
+        if (reconstructed != input_vec) {
+            std::cerr << "  ✗ FAILED on: " << test_str << std::endl;
+            std::cerr << "    Expected: " << test_str << std::endl;
+            std::cerr << "    Got: " << vec_to_str(reconstructed) << std::endl;
+            assert(false);
+        }
+
+        std::cout << "  ✓ \"" << test_str << "\" → BWT → inverse = original" << std::endl;
+    }
+
+    std::cout << "  ✓ All invertibility tests passed\n" << std::endl;
+}
+
+void test_block_processing() {
+    std::cout << "Test 3: Block Processing..." << std::endl;
+
+    // Simple test first: 2 blocks of known data
+    std::string block1_str = "aaaabbbbccccdddd";  // 16 bytes
+    std::string block2_str = "11112222333344";    // 14 bytes
+    std::string simple_input = block1_str + block2_str;  // 30 bytes total
+
+    auto input_vec = str_to_vec(simple_input);
+    std::cout << "  Simple test - Input size: " << input_vec.size() << " bytes" << std::endl;
+
+    // Transform with 16-byte blocks (so we get 2 blocks: 16 + 14)
+    size_t small_block_size = 16;
+    auto [bwt_output, primary_indices] = BWT::transform_blocks(input_vec, small_block_size);
+
+    std::cout << "  Number of blocks: " << primary_indices.size() << std::endl;
+    std::cout << "  BWT output size: " << bwt_output.size() << " bytes" << std::endl;
+    std::cout << "  Primary indices: ";
+    for (auto idx : primary_indices) {
+        std::cout << idx << " ";
+    }
+    std::cout << std::endl;
+
+    // Manually test each block
+    std::cout << "  Testing block 1 (16 bytes)..." << std::endl;
+    auto block1_vec = str_to_vec(block1_str);
+    auto [block1_bwt, block1_idx] = BWT::transform(block1_vec);
+    auto block1_reconstructed = BWT::inverse_transform(block1_bwt, block1_idx);
+    if (block1_reconstructed != block1_vec) {
+        std::cerr << "    ✗ Block 1 alone failed!" << std::endl;
+        assert(false);
+    }
+    std::cout << "    ✓ Block 1 alone works" << std::endl;
+
+    std::cout << "  Testing block 2 (14 bytes)..." << std::endl;
+    auto block2_vec = str_to_vec(block2_str);
+    auto [block2_bwt, block2_idx] = BWT::transform(block2_vec);
+    auto block2_reconstructed = BWT::inverse_transform(block2_bwt, block2_idx);
+    if (block2_reconstructed != block2_vec) {
+        std::cerr << "    ✗ Block 2 alone failed!" << std::endl;
+        assert(false);
+    }
+    std::cout << "    ✓ Block 2 alone works" << std::endl;
+
+    // Inverse transform
+    auto reconstructed = BWT::inverse_transform_blocks(bwt_output, primary_indices, small_block_size);
+
+    // Verify
+    std::cout << "  Reconstructed size: " << reconstructed.size() << " bytes" << std::endl;
+
+    if (reconstructed.size() != input_vec.size()) {
+        std::cerr << "  ✗ FAILED: Size mismatch!" << std::endl;
+        std::cerr << "    Expected: " << input_vec.size() << " bytes" << std::endl;
+        std::cerr << "    Got: " << reconstructed.size() << " bytes" << std::endl;
+        assert(false);
+    }
+
+    if (reconstructed != input_vec) {
+        std::cerr << "  ✗ FAILED: Content mismatch!" << std::endl;
+        std::cerr << "    Expected: " << simple_input << std::endl;
+        std::cerr << "    Got:      " << vec_to_str(reconstructed) << std::endl;
+        // Find first difference
+        for (size_t i = 0; i < std::min(reconstructed.size(), input_vec.size()); i++) {
+            if (reconstructed[i] != input_vec[i]) {
+                std::cerr << "    First difference at byte " << i << std::endl;
+                std::cerr << "    Expected char: '" << (char)input_vec[i] << "' (0x" << std::hex << (int)input_vec[i] << ")" << std::endl;
+                std::cerr << "    Got char:      '" << (char)reconstructed[i] << "' (0x" << (int)reconstructed[i] << ")" << std::dec << std::endl;
+                break;
+            }
+        }
+        assert(false);
+    }
+
+    std::cout << "  ✓ Simple block processing works!" << std::endl;
+
+    // Now test larger input
+    std::cout << "\n  Testing larger input..." << std::endl;
+    std::string large_input = "";
+    for (int i = 0; i < 100; i++) {
+        large_input += "The quick brown fox jumps over the lazy dog. ";
+    }
+
+    auto large_vec = str_to_vec(large_input);
+    std::cout << "  Large input size: " << large_vec.size() << " bytes" << std::endl;
+
+    auto [large_bwt, large_indices] = BWT::transform_blocks(large_vec, 1024);
+    std::cout << "  Number of blocks: " << large_indices.size() << std::endl;
+    std::cout << "  BWT output size: " << large_bwt.size() << " bytes" << std::endl;
+    std::cout << "  Primary indices: ";
+    for (size_t i = 0; i < std::min(large_indices.size(), size_t(10)); i++) {
+        std::cout << large_indices[i] << " ";
+    }
+    if (large_indices.size() > 10) {
+        std::cout << "... (" << large_indices.size() << " total)";
+    }
+    std::cout << std::endl;
+
+    // Validate: manually transform/inverse first block to check
+    std::cout << "  Validating first block manually..." << std::endl;
+    size_t first_block_size = std::min(size_t(1024), large_vec.size());
+    std::vector<uint8_t> first_block_input(large_vec.begin(), large_vec.begin() + first_block_size);
+    auto [first_block_bwt, first_block_idx] = BWT::transform(first_block_input);
+
+    std::cout << "    Manual transform: primary_index = " << first_block_idx << std::endl;
+    std::cout << "    From transform_blocks: primary_index = " << large_indices[0] << std::endl;
+
+    if (first_block_idx != large_indices[0]) {
+        std::cerr << "    ✗ WARNING: Primary index mismatch for block 0!" << std::endl;
+    }
+
+    // Check if BWT outputs match
+    std::vector<uint8_t> first_block_bwt_from_blocks(large_bwt.begin(), large_bwt.begin() + first_block_size);
+    if (first_block_bwt != first_block_bwt_from_blocks) {
+        std::cerr << "    ✗ WARNING: BWT output mismatch for block 0!" << std::endl;
+    }
+
+    // Try inverse with the manual index
+    auto first_block_reconstructed = BWT::inverse_transform(first_block_bwt, first_block_idx);
+    if (first_block_reconstructed == first_block_input) {
+        std::cout << "    ✓ Manual transform/inverse of block 0 works" << std::endl;
+    } else {
+        std::cerr << "    ✗ Manual transform/inverse of block 0 FAILED" << std::endl;
+    }
+
+    auto large_reconstructed = BWT::inverse_transform_blocks(large_bwt, large_indices, 1024);
+
+    std::cout << "  Reconstructed size: " << large_reconstructed.size() << " bytes" << std::endl;
+
+    if (large_reconstructed.size() != large_vec.size()) {
+        std::cerr << "  ✗ FAILED: Size mismatch!" << std::endl;
+        std::cerr << "    Expected: " << large_vec.size() << " bytes" << std::endl;
+        std::cerr << "    Got: " << large_reconstructed.size() << " bytes" << std::endl;
+        assert(false);
+    }
+
+    if (large_reconstructed != large_vec) {
+        std::cerr << "  ✗ FAILED: Large input content mismatch" << std::endl;
+        // Find first difference
+        for (size_t i = 0; i < std::min(large_reconstructed.size(), large_vec.size()); i++) {
+            if (large_reconstructed[i] != large_vec[i]) {
+                std::cerr << "    First difference at byte " << i << std::endl;
+                std::cerr << "    Expected: '" << (char)large_vec[i] << "' (0x" << std::hex << (int)large_vec[i] << ")" << std::endl;
+                std::cerr << "    Got:      '" << (char)large_reconstructed[i] << "' (0x" << (int)large_reconstructed[i] << ")" << std::dec << std::endl;
+
+                // Show context
+                size_t ctx_start = (i >= 20) ? i - 20 : 0;
+                size_t ctx_end = std::min(i + 20, large_vec.size());
+                std::cerr << "    Context (expected): \"";
+                for (size_t j = ctx_start; j < ctx_end; j++) {
+                    char c = large_vec[j];
+                    if (c >= 32 && c < 127) std::cerr << c;
+                    else std::cerr << '.';
+                }
+                std::cerr << "\"" << std::endl;
+                std::cerr << "    Context (got):      \"";
+                for (size_t j = ctx_start; j < ctx_end; j++) {
+                    if (j < large_reconstructed.size()) {
+                        char c = large_reconstructed[j];
+                        if (c >= 32 && c < 127) std::cerr << c;
+                        else std::cerr << '.';
+                    }
+                }
+                std::cerr << "\"" << std::endl;
+                break;
+            }
+        }
+        assert(false);
+    }
+
+    std::cout << "  ✓ Large input works too!" << std::endl;
+    std::cout << "  ✓ All block processing tests passed\n" << std::endl;
+}
+
+void test_edge_cases() {
+    std::cout << "Test 4: Edge Cases..." << std::endl;
+
+    // Empty string
+    {
+        std::vector<uint8_t> empty;
+        auto [bwt_output, primary_index] = BWT::transform(empty);
+        assert(bwt_output.empty());
+        std::cout << "  ✓ Empty string handled" << std::endl;
+    }
+
+    // Single character
+    {
+        auto input = str_to_vec("a");
+        auto [bwt_output, primary_index] = BWT::transform(input);
+        auto reconstructed = BWT::inverse_transform(bwt_output, primary_index);
+        assert(reconstructed == input);
+        std::cout << "  ✓ Single character handled" << std::endl;
+    }
+
+    // All same characters
+    {
+        auto input = str_to_vec("aaaaaaaaaa");
+        auto [bwt_output, primary_index] = BWT::transform(input);
+        auto reconstructed = BWT::inverse_transform(bwt_output, primary_index);
+        assert(reconstructed == input);
+        std::cout << "  ✓ All same characters handled" << std::endl;
+    }
+
+    // Binary data
+    {
+        std::vector<uint8_t> binary_data;
+        for (int i = 0; i < 256; i++) {
+            binary_data.push_back(static_cast<uint8_t>(i));
+        }
+        auto [bwt_output, primary_index] = BWT::transform(binary_data);
+        auto reconstructed = BWT::inverse_transform(bwt_output, primary_index);
+        assert(reconstructed == binary_data);
+        std::cout << "  ✓ Binary data handled" << std::endl;
+    }
+
+    std::cout << "  ✓ All edge cases passed\n" << std::endl;
+}
+
+int main() {
+    std::cout << "=== BWT Unit Tests ===" << std::endl << std::endl;
+
+    try {
+        test_basic_transform();
+        test_invertibility();
+        test_block_processing();
+        test_edge_cases();
+
+        std::cout << "=== All Tests Passed! ===" << std::endl;
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Test failed with exception: " << e.what() << std::endl;
+        return 1;
+    }
+}
+
+===== END tests/test_bwt.cpp =====
+
+===== BEGIN tests/verify_lossless.sh =====
+#!/bin/bash
+
+# Verification script for lossless compression
+# Tests that compress + decompress produces identical output
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+echo "=== Lossless Compression Verification Test ==="
+echo
+
+# Create test directory
+TEST_DIR="tests/tmp"
+mkdir -p "$TEST_DIR"
+
+# Test 1: Simple text file
+echo "Test 1: Simple text file"
+echo "Hello, World! This is a test of the lossless compression system." > "$TEST_DIR/test1.txt"
+echo "The quick brown fox jumps over the lazy dog." >> "$TEST_DIR/test1.txt"
+echo "Algorithmic Information Theory - Project 1" >> "$TEST_DIR/test1.txt"
+
+./bin/compress "$TEST_DIR/test1.txt" "$TEST_DIR/test1.compressed"
+./bin/decompress "$TEST_DIR/test1.compressed" "$TEST_DIR/test1.decompressed"
+
+if cmp -s "$TEST_DIR/test1.txt" "$TEST_DIR/test1.decompressed"; then
+    echo -e "${GREEN}✓ Test 1 PASSED${NC}"
+else
+    echo -e "${RED}✗ Test 1 FAILED${NC}"
+    exit 1
+fi
+echo
+
+# Test 2: Binary data (random bytes)
+echo "Test 2: Binary data"
+dd if=/dev/urandom of="$TEST_DIR/test2.bin" bs=1024 count=10 2>/dev/null
+
+./bin/compress "$TEST_DIR/test2.bin" "$TEST_DIR/test2.compressed"
+./bin/decompress "$TEST_DIR/test2.compressed" "$TEST_DIR/test2.decompressed"
+
+if cmp -s "$TEST_DIR/test2.bin" "$TEST_DIR/test2.decompressed"; then
+    echo -e "${GREEN}✓ Test 2 PASSED${NC}"
+else
+    echo -e "${RED}✗ Test 2 FAILED${NC}"
+    exit 1
+fi
+echo
+
+# Test 3: Empty file
+echo "Test 3: Empty file"
+touch "$TEST_DIR/test3.empty"
+
+./bin/compress "$TEST_DIR/test3.empty" "$TEST_DIR/test3.compressed"
+./bin/decompress "$TEST_DIR/test3.compressed" "$TEST_DIR/test3.decompressed"
+
+if cmp -s "$TEST_DIR/test3.empty" "$TEST_DIR/test3.decompressed"; then
+    echo -e "${GREEN}✓ Test 3 PASSED${NC}"
+else
+    echo -e "${RED}✗ Test 3 FAILED${NC}"
+    exit 1
+fi
+echo
+
+# Test 4: Highly repetitive data
+echo "Test 4: Highly repetitive data"
+for i in {1..1000}; do echo "AAAAAAAA"; done > "$TEST_DIR/test4.repetitive"
+
+./bin/compress "$TEST_DIR/test4.repetitive" "$TEST_DIR/test4.compressed"
+./bin/decompress "$TEST_DIR/test4.compressed" "$TEST_DIR/test4.decompressed"
+
+if cmp -s "$TEST_DIR/test4.repetitive" "$TEST_DIR/test4.decompressed"; then
+    echo -e "${GREEN}✓ Test 4 PASSED${NC}"
+    # Show compression effectiveness
+    ORIG_SIZE=$(stat -c%s "$TEST_DIR/test4.repetitive")
+    COMP_SIZE=$(stat -c%s "$TEST_DIR/test4.compressed")
+    RATIO=$(awk "BEGIN {printf \"%.2f\", 100.0 * $COMP_SIZE / $ORIG_SIZE}")
+    echo "  Compression ratio: $RATIO% (highly repetitive data)"
+else
+    echo -e "${RED}✗ Test 4 FAILED${NC}"
+    exit 1
+fi
+echo
+
+# Clean up
+rm -rf "$TEST_DIR"
+
+echo -e "${GREEN}=== ALL TESTS PASSED ===${NC}"
+echo "The compressor is LOSSLESS and working correctly!"
+
+===== END tests/verify_lossless.sh =====
+
+===== BEGIN benchmarks_macos/benchmark_all.sh =====
+#!/bin/bash
+
+# Comprehensive benchmark script for all data files on macOS-compatible shells.
+# Compares: our compressor, gzip, bzip2, xz (lzma), zstd
+# Outputs: Terminal table, CSV file, Comprehensive Markdown report
+
+set -e
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/common.sh"
+
+DATA_DIR="data"
+TEMP_DIR="$SCRIPT_DIR/tmp_$$"
+RESULTS_CSV="$SCRIPT_DIR/results.csv"
+RESULTS_MD="$SCRIPT_DIR/results.md"
+WINNERS_FILE="$TEMP_DIR/winners.list"
+TOOLS="g07 gzip bzip2 xz zstd"
+
+COMPRESS_TIMEOUT=60
+DECOMPRESS_TIMEOUT=30
+
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+mkdir -p "$TEMP_DIR"
+: > "$WINNERS_FILE"
+
+echo "File,Original Size (bytes),Tool,Compressed Size (bytes),Compression Ratio (%),Bits/Symbol,Compress Time (ms),Decompress Time (ms),Lossless" > "$RESULTS_CSV"
+
+cat > "$RESULTS_MD" << EOF
+# Comprehensive Compression Benchmark Results
+
+**Project**: TAI - Algorithmic Information Theory
+**Date**: $(date +"%Y-%m-%d")
+**Tools Compared**: G07, gzip, bzip2, xz (LZMA), zstd
+
+---
+
+## Table of Contents
+1. [Quick Summary](#quick-summary)
+2. [Detailed Results by File](#detailed-results-by-file)
+3. [Performance Metrics](#performance-metrics)
+4. [Rankings](#rankings)
+5. [Overall Statistics](#overall-statistics)
+
+---
+
+EOF
+
+echo -e "${BOLD}===============================================================${NC}"
+echo -e "${BOLD}         COMPREHENSIVE COMPRESSION BENCHMARK                   ${NC}"
+echo -e "${BOLD}===============================================================${NC}"
+echo
+
+benchmark_file_tool() {
+    local file="$1"
+    local base_name="$2"
+    local tool_name="$3"
+    local compress_cmd="$4"
+    local decompress_cmd="$5"
+    local compressed_file="$6"
+    local original_size="$7"
+    local result_file="$TEMP_DIR/${base_name}.${tool_name}.result"
+    local start
+    local end
+    local exit_code
+    local compress_time
+    local compressed_size
+    local ratio
+    local bits_per_symbol
+    local decompressed_file
+    local decompress_time
+    local lossless
+
+    start=$(now_ms)
+    if run_with_timeout "$COMPRESS_TIMEOUT" "$compress_cmd"; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+    end=$(now_ms)
+    compress_time=$((end - start))
+
+    if [ $exit_code -eq 124 ]; then
+        echo "TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT,TIMEOUT" > "$result_file"
+        return 1
+    elif [ $exit_code -ne 0 ]; then
+        echo "ERROR,ERROR,ERROR,ERROR,ERROR,ERROR" > "$result_file"
+        return 1
+    fi
+
+    if [ ! -f "$compressed_file" ]; then
+        echo "ERROR,ERROR,ERROR,ERROR,ERROR,ERROR" > "$result_file"
+        return 1
+    fi
+
+    compressed_size=$(file_size "$compressed_file")
+    ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $compressed_size / $original_size}")
+    bits_per_symbol=$(awk "BEGIN {printf \"%.4f\", 8.0 * $compressed_size / $original_size}")
+
+    decompressed_file="$TEMP_DIR/${base_name}.${tool_name}.decompressed"
+    start=$(now_ms)
+    if run_with_timeout "$DECOMPRESS_TIMEOUT" "$decompress_cmd"; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+    end=$(now_ms)
+    decompress_time=$((end - start))
+
+    if [ $exit_code -eq 124 ]; then
+        echo "$compressed_size,$ratio,$bits_per_symbol,$compress_time,TIMEOUT,TIMEOUT" > "$result_file"
+        rm -f "$compressed_file"
+        return 1
+    elif [ $exit_code -ne 0 ]; then
+        echo "$compressed_size,$ratio,$bits_per_symbol,$compress_time,ERROR,NO" > "$result_file"
+        rm -f "$compressed_file"
+        return 1
+    fi
+
+    lossless="NO"
+    if cmp -s "$file" "$decompressed_file"; then
+        lossless="YES"
+    fi
+
+    echo "$compressed_size,$ratio,$bits_per_symbol,$compress_time,$decompress_time,$lossless" > "$result_file"
+    rm -f "$compressed_file" "$decompressed_file"
+    return 0
+}
+
+tool_display_name() {
+    case "$1" in
+        g07) echo "G07" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+count_tool_wins() {
+    awk -v tool="$1" '$0 == tool { count++ } END { print count + 0 }' "$WINNERS_FILE"
+}
+
+tool_average_time() {
+    local tool="$1"
+    local field_index="$2"
+    local total=0
+    local count=0
+    local file
+    local base_name
+    local result_file
+    local comp_size
+    local ratio
+    local bits
+    local comp_time
+    local decomp_time
+    local lossless
+    local value
+
+    for file in "$DATA_DIR"/*; do
+        if [ ! -f "$file" ]; then
+            continue
+        fi
+
+        base_name=$(basename "$file")
+        result_file="$TEMP_DIR/${base_name}.${tool}.result"
+        if [ ! -f "$result_file" ]; then
+            continue
+        fi
+
+        IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless < "$result_file"
+        if [ "$field_index" = "4" ]; then
+            value="$comp_time"
+        else
+            value="$decomp_time"
+        fi
+
+        if is_numeric "$value"; then
+            total=$((total + value))
+            count=$((count + 1))
+        fi
+    done
+
+    if [ $count -gt 0 ]; then
+        echo $((total / count))
+    fi
+}
+
+build_tool_stats_file() {
+    local stats_file="$TEMP_DIR/tool_stats.tsv"
+    local file
+    local tool
+    local base_name
+    local result_file
+    local original_size
+    local total_orig
+    local total_comp
+    local count
+    local comp_size
+    local ratio
+    local bits
+    local comp_time
+    local decomp_time
+    local lossless
+    local avg_ratio
+    local avg_bits
+    local wins
+
+    : > "$stats_file"
+
+    for tool in $TOOLS; do
+        total_orig=0
+        total_comp=0
+        count=0
+
+        for file in "$DATA_DIR"/*; do
+            if [ ! -f "$file" ]; then
+                continue
+            fi
+
+            base_name=$(basename "$file")
+            result_file="$TEMP_DIR/${base_name}.${tool}.result"
+            if [ ! -f "$result_file" ]; then
+                continue
+            fi
+
+            IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless < "$result_file"
+            if is_numeric "$comp_size" && is_numeric "$comp_time" && is_numeric "$decomp_time"; then
+                original_size=$(file_size "$file")
+                total_orig=$((total_orig + original_size))
+                total_comp=$((total_comp + comp_size))
+                count=$((count + 1))
+            fi
+        done
+
+        if [ $count -gt 0 ]; then
+            avg_ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $total_comp / $total_orig}")
+            avg_bits=$(awk "BEGIN {printf \"%.4f\", 8.0 * $total_comp / $total_orig}")
+            wins=$(count_tool_wins "$tool")
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "$tool" "$total_orig" "$total_comp" "$count" "$avg_ratio" "$avg_bits" "$wins" >> "$stats_file"
+        fi
+    done
+
+    echo "$stats_file"
+}
+
+for file in "$DATA_DIR"/*; do
+    if [ ! -f "$file" ]; then
+        continue
+    fi
+
+    base_name=$(basename "$file")
+    original_size=$(file_size "$file")
+
+    echo -e "${BLUE}-------------------------------------------------------------${NC}"
+    echo -e "${BOLD}File: $base_name${NC} ($(human_size "$original_size"))"
+    echo -e "${BLUE}-------------------------------------------------------------${NC}"
+
+    rm -f "$TEMP_DIR/${base_name}."*.result
+
+    echo -n "  Testing G07... "
+    if benchmark_file_tool "$file" "$base_name" "g07" \
+        "./bin/compress '$file' '$TEMP_DIR/${base_name}.g07' --yes" \
+        "./bin/decompress '$TEMP_DIR/${base_name}.g07' '$TEMP_DIR/${base_name}.g07.decompressed'" \
+        "$TEMP_DIR/${base_name}.g07" \
+        "$original_size"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${YELLOW}TIMEOUT/ERROR${NC}"
+    fi
+
+    echo -n "  Testing gzip... "
+    if benchmark_file_tool "$file" "$base_name" "gzip" \
+        "gzip -c '$file' > '$TEMP_DIR/${base_name}.gz'" \
+        "gzip -dc '$TEMP_DIR/${base_name}.gz' > '$TEMP_DIR/${base_name}.gzip.decompressed'" \
+        "$TEMP_DIR/${base_name}.gz" \
+        "$original_size"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${YELLOW}TIMEOUT/ERROR${NC}"
+    fi
+
+    echo -n "  Testing bzip2... "
+    if benchmark_file_tool "$file" "$base_name" "bzip2" \
+        "bzip2 -c '$file' > '$TEMP_DIR/${base_name}.bz2'" \
+        "bzip2 -dc '$TEMP_DIR/${base_name}.bz2' > '$TEMP_DIR/${base_name}.bzip2.decompressed'" \
+        "$TEMP_DIR/${base_name}.bz2" \
+        "$original_size"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${YELLOW}TIMEOUT/ERROR${NC}"
+    fi
+
+    echo -n "  Testing xz... "
+    if benchmark_file_tool "$file" "$base_name" "xz" \
+        "xz -c '$file' > '$TEMP_DIR/${base_name}.xz'" \
+        "xz -dc '$TEMP_DIR/${base_name}.xz' > '$TEMP_DIR/${base_name}.xz.decompressed'" \
+        "$TEMP_DIR/${base_name}.xz" \
+        "$original_size"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${YELLOW}TIMEOUT/ERROR${NC}"
+    fi
+
+    if command -v zstd >/dev/null 2>&1; then
+        echo -n "  Testing zstd... "
+        if benchmark_file_tool "$file" "$base_name" "zstd" \
+            "zstd -q '$file' -o '$TEMP_DIR/${base_name}.zst'" \
+            "zstd -qd '$TEMP_DIR/${base_name}.zst' -o '$TEMP_DIR/${base_name}.zstd.decompressed'" \
+            "$TEMP_DIR/${base_name}.zst" \
+            "$original_size"; then
+            echo -e "${GREEN}OK${NC}"
+        else
+            echo -e "${YELLOW}TIMEOUT/ERROR${NC}"
+        fi
+    fi
+
+    echo
+
+    for tool in $TOOLS; do
+        result_file="$TEMP_DIR/${base_name}.${tool}.result"
+        if [ -f "$result_file" ]; then
+            result=$(<"$result_file")
+            echo "$base_name,$original_size,$tool,$result" >> "$RESULTS_CSV"
+        fi
+    done
+done
+
+echo "## Quick Summary" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "### Compression Ratio Comparison" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "| File | Size | G07 | gzip | bzip2 | xz | zstd | Winner |" >> "$RESULTS_MD"
+echo "|------|------|-----|------|-------|----|------|--------|" >> "$RESULTS_MD"
+
+for file in "$DATA_DIR"/*; do
+    if [ ! -f "$file" ]; then
+        continue
+    fi
+
+    base_name=$(basename "$file")
+    original_size=$(file_size "$file")
+    size_display=$(human_size "$original_size")
+    best_ratio=""
+    best_tool=""
+
+    for tool in $TOOLS; do
+        result_file="$TEMP_DIR/${base_name}.${tool}.result"
+        if [ ! -f "$result_file" ]; then
+            continue
+        fi
+
+        IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless < "$result_file"
+        if is_numeric "$ratio"; then
+            if [ -z "$best_ratio" ] || float_lt "$ratio" "$best_ratio"; then
+                best_ratio="$ratio"
+                best_tool="$tool"
+            fi
+        fi
+    done
+
+    if [ -n "$best_tool" ]; then
+        echo "$best_tool" >> "$WINNERS_FILE"
+    fi
+
+    echo -n "| $base_name | $size_display |" >> "$RESULTS_MD"
+    for tool in $TOOLS; do
+        result_file="$TEMP_DIR/${base_name}.${tool}.result"
+        if [ -f "$result_file" ]; then
+            IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless < "$result_file"
+            if is_numeric "$ratio"; then
+                if [ "$tool" = "$best_tool" ]; then
+                    echo -n " **${ratio}%** * |" >> "$RESULTS_MD"
+                else
+                    echo -n " ${ratio}% |" >> "$RESULTS_MD"
+                fi
+            else
+                echo -n " $ratio |" >> "$RESULTS_MD"
+            fi
+        else
+            echo -n " N/A |" >> "$RESULTS_MD"
+        fi
+    done
+    echo " $best_tool |" >> "$RESULTS_MD"
+done
+
+echo >> "$RESULTS_MD"
+echo "* = Best compressor for that file" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "---" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+
+echo "## Detailed Results by File" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+
+for file in "$DATA_DIR"/*; do
+    if [ ! -f "$file" ]; then
+        continue
+    fi
+
+    base_name=$(basename "$file")
+    original_size=$(file_size "$file")
+    size_display=$(human_size "$original_size")
+
+    echo "### File: $base_name" >> "$RESULTS_MD"
+    echo >> "$RESULTS_MD"
+    echo "**Original Size**: $original_size bytes ($size_display)" >> "$RESULTS_MD"
+    echo >> "$RESULTS_MD"
+    echo "| Tool | Compressed Size | Ratio | Bits/Symbol | Compress Time | Decompress Time | Space Saved | Lossless |" >> "$RESULTS_MD"
+    echo "|------|-----------------|-------|-------------|---------------|-----------------|-------------|----------|" >> "$RESULTS_MD"
+
+    for tool in $TOOLS; do
+        result_file="$TEMP_DIR/${base_name}.${tool}.result"
+        if [ ! -f "$result_file" ]; then
+            continue
+        fi
+
+        IFS=',' read -r comp_size ratio bits comp_time decomp_time lossless < "$result_file"
+
+        if [ "$comp_size" = "TIMEOUT" ]; then
+            echo "| $tool | TIMEOUT (> ${COMPRESS_TIMEOUT}s) | - | - | - | - | - | TIMEOUT |" >> "$RESULTS_MD"
+            continue
+        elif [ "$comp_size" = "ERROR" ]; then
+            echo "| $tool | ERROR | - | - | - | - | - | ERROR |" >> "$RESULTS_MD"
+            continue
+        fi
+
+        comp_size_display=$(human_size "$comp_size")
+        saved=$((original_size - comp_size))
+        saved_abs=$saved
+        if [ $saved_abs -lt 0 ]; then
+            saved_abs=$((0 - saved_abs))
+        fi
+        saved_display=$(human_size "$saved_abs")
+
+        if [ $saved -ge 0 ]; then
+            saved_str="saved $saved_display"
+        else
+            saved_str="overhead $saved_display"
+        fi
+
+        perf_indicator="[red]"
+        if float_lt "$ratio" "50"; then
+            perf_indicator="[green]"
+        elif float_lt "$ratio" "80"; then
+            perf_indicator="[yellow]"
+        fi
+
+        lossless_mark="YES"
+        if [ "$lossless" = "TIMEOUT" ]; then
+            lossless_mark="TIMEOUT"
+            decomp_time="TIMEOUT (> ${DECOMPRESS_TIMEOUT}s)"
+        elif [ "$lossless" != "YES" ]; then
+            lossless_mark="NO"
+        fi
+
+        if [ "$decomp_time" = "ERROR" ]; then
+            decomp_time="ERROR"
+        elif is_numeric "$decomp_time"; then
+            decomp_time="${decomp_time} ms"
+        fi
+
+        echo "| $tool | $comp_size_display ($comp_size) | $perf_indicator ${ratio}% | ${bits} | ${comp_time} ms | ${decomp_time} | $saved_str | $lossless_mark |" >> "$RESULTS_MD"
+    done
+
+    echo >> "$RESULTS_MD"
+done
+
+echo "---" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "## Performance Metrics" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "### Compression Speed (Average)" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "| Tool | Avg Compress Time | Ranking |" >> "$RESULTS_MD"
+echo "|------|-------------------|---------|" >> "$RESULTS_MD"
+
+COMPRESS_AVG_FILE="$TEMP_DIR/avg_compress.tsv"
+: > "$COMPRESS_AVG_FILE"
+for tool in $TOOLS; do
+    avg=$(tool_average_time "$tool" "4")
+    if [ -n "$avg" ]; then
+        printf "%s\t%s\n" "$tool" "$avg" >> "$COMPRESS_AVG_FILE"
+    fi
+done
+
+sort -k2 -n "$COMPRESS_AVG_FILE" > "$COMPRESS_AVG_FILE.sorted"
+rank=1
+while IFS=$'\t' read -r tool time_ms; do
+    [ -n "$tool" ] || continue
+    medal=""
+    case $rank in
+        1) medal="[1st]" ;;
+        2) medal="[2nd]" ;;
+        3) medal="[3rd]" ;;
+    esac
+    echo "| $tool | ${time_ms} ms | $medal #$rank |" >> "$RESULTS_MD"
+    rank=$((rank + 1))
+done < "$COMPRESS_AVG_FILE.sorted"
+
+echo >> "$RESULTS_MD"
+echo "### Decompression Speed (Average)" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "| Tool | Avg Decompress Time | Ranking |" >> "$RESULTS_MD"
+echo "|------|---------------------|---------|" >> "$RESULTS_MD"
+
+DECOMPRESS_AVG_FILE="$TEMP_DIR/avg_decompress.tsv"
+: > "$DECOMPRESS_AVG_FILE"
+for tool in $TOOLS; do
+    avg=$(tool_average_time "$tool" "5")
+    if [ -n "$avg" ]; then
+        printf "%s\t%s\n" "$tool" "$avg" >> "$DECOMPRESS_AVG_FILE"
+    fi
+done
+
+sort -k2 -n "$DECOMPRESS_AVG_FILE" > "$DECOMPRESS_AVG_FILE.sorted"
+rank=1
+while IFS=$'\t' read -r tool time_ms; do
+    [ -n "$tool" ] || continue
+    medal=""
+    case $rank in
+        1) medal="[1st]" ;;
+        2) medal="[2nd]" ;;
+        3) medal="[3rd]" ;;
+    esac
+    echo "| $tool | ${time_ms} ms | $medal #$rank |" >> "$RESULTS_MD"
+    rank=$((rank + 1))
+done < "$DECOMPRESS_AVG_FILE.sorted"
+
+echo >> "$RESULTS_MD"
+echo "---" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "## Rankings" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "### Overall Compression Ratio Ranking" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "| Rank | Tool | Average Ratio | Files Won | Total Compressed | Performance |" >> "$RESULTS_MD"
+echo "|------|------|---------------|-----------|------------------|-------------|" >> "$RESULTS_MD"
+
+TOOL_STATS_FILE=$(build_tool_stats_file)
+sort -k5 -n "$TOOL_STATS_FILE" > "$TOOL_STATS_FILE.sorted"
+rank=1
+while IFS=$'\t' read -r tool total_orig total_comp count avg_ratio avg_bits wins; do
+    [ -n "$tool" ] || continue
+    total_comp_display=$(human_size "$total_comp")
+    medal=""
+    perf=""
+    case $rank in
+        1) medal="[1st]"; perf="***" ;;
+        2) medal="[2nd]"; perf="**" ;;
+        3) medal="[3rd]"; perf="*" ;;
+    esac
+    echo "| $medal $rank | **$tool** | ${avg_ratio}% | $wins | $total_comp_display | $perf |" >> "$RESULTS_MD"
+    rank=$((rank + 1))
+done < "$TOOL_STATS_FILE.sorted"
+
+echo >> "$RESULTS_MD"
+echo "### Files Won by Each Tool" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+for tool in $TOOLS; do
+    wins=$(count_tool_wins "$tool")
+    echo "- **$tool**: $wins file(s)" >> "$RESULTS_MD"
+done
+
+echo >> "$RESULTS_MD"
+echo "---" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "## Overall Statistics" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "| Tool | Total Original | Total Compressed | Average Ratio | Bits/Symbol | Files Tested |" >> "$RESULTS_MD"
+echo "|------|---------------|------------------|---------------|-------------|--------------|" >> "$RESULTS_MD"
+
+while IFS=$'\t' read -r tool total_orig total_comp count avg_ratio avg_bits wins; do
+    [ -n "$tool" ] || continue
+    echo "| $tool | $(human_size "$total_orig") | $(human_size "$total_comp") | ${avg_ratio}% | ${avg_bits} | $count |" >> "$RESULTS_MD"
+done < "$TOOL_STATS_FILE"
+
+echo >> "$RESULTS_MD"
+echo "---" >> "$RESULTS_MD"
+echo >> "$RESULTS_MD"
+echo "*Report generated on $(date)*" >> "$RESULTS_MD"
+
+echo -e "\n${BOLD}===============================================================${NC}"
+echo -e "${BOLD}                    SUMMARY STATISTICS                         ${NC}"
+echo -e "${BOLD}===============================================================${NC}"
+echo
+printf "${BOLD}%-15s %15s %15s %15s${NC}\n" "Tool" "Total Original" "Total Compressed" "Avg Ratio"
+echo "---------------------------------------------------------------"
+
+while IFS=$'\t' read -r tool total_orig total_comp count avg_ratio avg_bits wins; do
+    [ -n "$tool" ] || continue
+    color="$NC"
+    if float_lt "$avg_ratio" "60"; then
+        color="$GREEN"
+    elif float_lt "$avg_ratio" "80"; then
+        color="$YELLOW"
+    fi
+
+    printf "${color}%-15s %15s %15s %14s%%${NC}\n" \
+        "$tool" \
+        "$(human_size "$total_orig")" \
+        "$(human_size "$total_comp")" \
+        "$avg_ratio"
+done < "$TOOL_STATS_FILE"
+
+echo
+echo -e "${BOLD}===============================================================${NC}"
+echo -e "${BOLD}                        RESULTS SAVED                          ${NC}"
+echo -e "${BOLD}===============================================================${NC}"
+echo -e "  CSV:      ${GREEN}$RESULTS_CSV${NC}"
+echo -e "  Markdown: ${GREEN}$RESULTS_MD${NC}"
+echo
+
+rm -rf "$TEMP_DIR"
+
+echo -e "${GREEN}Benchmark complete!${NC}"
+
+===== END benchmarks_macos/benchmark_all.sh =====
+
+===== BEGIN benchmarks_macos/common.sh =====
+#!/bin/bash
+
+file_size() {
+    if stat -f%z "$1" >/dev/null 2>&1; then
+        stat -f%z "$1"
+    else
+        stat -c%s "$1"
+    fi
+}
+
+now_ms() {
+    perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000'
+}
+
+human_size() {
+    awk -v bytes="$1" 'BEGIN {
+        split("B KiB MiB GiB TiB PiB", units, " ");
+        idx = 1;
+        while (bytes >= 1024 && idx < 6) {
+            bytes /= 1024;
+            idx++;
+        }
+        if (idx == 1) {
+            printf "%d%s", bytes, units[idx];
+        } else {
+            printf "%.1f%s", bytes, units[idx];
+        }
+    }'
+}
+
+float_lt() {
+    awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'
+}
+
+is_numeric() {
+    case "$1" in
+        ''|*[!0-9.]*|*.*.*)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+kill_process_tree() {
+    local signal="$1"
+    local pid="$2"
+    local children
+    local child
+
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    for child in $children; do
+        kill_process_tree "$signal" "$child"
+    done
+
+    kill "-$signal" "$pid" 2>/dev/null || true
+}
+
+run_with_timeout() {
+    local timeout_seconds="$1"
+    local command="$2"
+    local timeout_flag
+    local cmd_pid
+    local watcher_pid
+    local status
+
+    timeout_flag=$(mktemp "${TMPDIR:-/tmp}/g07_timeout.XXXXXX")
+    rm -f "$timeout_flag"
+
+    bash -c "$command" >/dev/null 2>&1 &
+    cmd_pid=$!
+
+    (
+        sleep "$timeout_seconds"
+        if kill -0 "$cmd_pid" 2>/dev/null; then
+            : > "$timeout_flag"
+            kill_process_tree TERM "$cmd_pid"
+            sleep 1
+            if kill -0 "$cmd_pid" 2>/dev/null; then
+                kill_process_tree KILL "$cmd_pid"
+            fi
+        fi
+    ) &
+    watcher_pid=$!
+
+    wait "$cmd_pid" 2>/dev/null
+    status=$?
+
+    kill "$watcher_pid" 2>/dev/null || true
+    wait "$watcher_pid" 2>/dev/null || true
+
+    if [ -f "$timeout_flag" ]; then
+        rm -f "$timeout_flag"
+        return 124
+    fi
+
+    rm -f "$timeout_flag"
+    return "$status"
+}
+
+===== END benchmarks_macos/common.sh =====
+
+===== BEGIN benchmarks_macos/compare.sh =====
+#!/bin/bash
+
+# Benchmark script to compare compression tools on macOS-compatible shells.
+# Compares: g07, gzip, bzip2, xz (lzma), zstd
+
+set -e
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/common.sh"
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <input_file>"
+    exit 1
+fi
+
+INPUT_FILE="$1"
+BASENAME=$(basename "$INPUT_FILE")
+TEMP_DIR="$SCRIPT_DIR/tmp_compare_$$"
+
+mkdir -p "$TEMP_DIR"
+
+# Timeout configuration (seconds)
+COMPRESS_TIMEOUT=60
+DECOMPRESS_TIMEOUT=30
+
+# Colors
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${BOLD}=== Compression Benchmark ===${NC}"
+echo "Input file: $INPUT_FILE"
+ORIGINAL_SIZE=$(file_size "$INPUT_FILE")
+echo "Original size: $ORIGINAL_SIZE bytes"
+echo
+
+benchmark() {
+    local name="$1"
+    local compress_cmd="$2"
+    local decompress_cmd="$3"
+    local compressed_file="$4"
+    local start
+    local end
+    local exit_code
+    local compress_time
+    local compressed_size
+    local ratio
+    local bits_per_symbol
+    local decompressed_file
+    local decompress_time
+    local lossless
+
+    echo -e "${BLUE}--- $name ---${NC}"
+
+    start=$(now_ms)
+    if run_with_timeout "$COMPRESS_TIMEOUT" "$compress_cmd"; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+    end=$(now_ms)
+    compress_time=$((end - start))
+
+    if [ $exit_code -eq 124 ]; then
+        echo -e "${YELLOW}TIMEOUT: Compression exceeded ${COMPRESS_TIMEOUT}s${NC}"
+        return
+    elif [ $exit_code -ne 0 ] || [ ! -f "$compressed_file" ]; then
+        echo "ERROR: Compression failed"
+        return
+    fi
+
+    compressed_size=$(file_size "$compressed_file")
+    ratio=$(awk "BEGIN {printf \"%.2f\", 100.0 * $compressed_size / $ORIGINAL_SIZE}")
+    bits_per_symbol=$(awk "BEGIN {printf \"%.4f\", 8.0 * $compressed_size / $ORIGINAL_SIZE}")
+
+    decompressed_file="$TEMP_DIR/${BASENAME}.decompressed"
+    start=$(now_ms)
+    if run_with_timeout "$DECOMPRESS_TIMEOUT" "$decompress_cmd"; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+    end=$(now_ms)
+    decompress_time=$((end - start))
+
+    if [ $exit_code -eq 124 ]; then
+        echo "Compressed size:   $compressed_size bytes"
+        echo -e "Compression ratio: $ratio%"
+        echo "Bits per symbol:   $bits_per_symbol"
+        echo "Compress time:     ${compress_time} ms"
+        echo -e "Decompress time:   ${YELLOW}TIMEOUT (> ${DECOMPRESS_TIMEOUT}s)${NC}"
+        echo
+        rm -f "$compressed_file" "$decompressed_file"
+        return
+    elif [ $exit_code -ne 0 ]; then
+        echo "ERROR: Decompression failed"
+        echo
+        rm -f "$compressed_file" "$decompressed_file"
+        return
+    fi
+
+    if cmp -s "$INPUT_FILE" "$decompressed_file"; then
+        lossless="${GREEN}LOSSLESS${NC}"
+    else
+        lossless="ERROR: Not lossless!"
+    fi
+
+    echo "Compressed size:   $compressed_size bytes"
+    echo -e "Compression ratio: $ratio%"
+    echo "Bits per symbol:   $bits_per_symbol"
+    echo "Compress time:     ${compress_time} ms"
+    echo "Decompress time:   ${decompress_time} ms"
+    echo -e "Verification:      $lossless"
+    echo
+
+    rm -f "$compressed_file" "$decompressed_file"
+}
+
+benchmark "G07 Compressor" \
+    "./bin/compress '$INPUT_FILE' '$TEMP_DIR/${BASENAME}.g07' --yes" \
+    "./bin/decompress '$TEMP_DIR/${BASENAME}.g07' '$TEMP_DIR/${BASENAME}.decompressed'" \
+    "$TEMP_DIR/${BASENAME}.g07"
+
+benchmark "gzip" \
+    "gzip -c '$INPUT_FILE' > '$TEMP_DIR/${BASENAME}.gz'" \
+    "gzip -dc '$TEMP_DIR/${BASENAME}.gz' > '$TEMP_DIR/${BASENAME}.decompressed'" \
+    "$TEMP_DIR/${BASENAME}.gz"
+
+benchmark "bzip2" \
+    "bzip2 -c '$INPUT_FILE' > '$TEMP_DIR/${BASENAME}.bz2'" \
+    "bzip2 -dc '$TEMP_DIR/${BASENAME}.bz2' > '$TEMP_DIR/${BASENAME}.decompressed'" \
+    "$TEMP_DIR/${BASENAME}.bz2"
+
+benchmark "xz (lzma)" \
+    "xz -c '$INPUT_FILE' > '$TEMP_DIR/${BASENAME}.xz'" \
+    "xz -dc '$TEMP_DIR/${BASENAME}.xz' > '$TEMP_DIR/${BASENAME}.decompressed'" \
+    "$TEMP_DIR/${BASENAME}.xz"
+
+if command -v zstd >/dev/null 2>&1; then
+    benchmark "zstd" \
+        "zstd -q '$INPUT_FILE' -o '$TEMP_DIR/${BASENAME}.zst'" \
+        "zstd -qd '$TEMP_DIR/${BASENAME}.zst' -o '$TEMP_DIR/${BASENAME}.decompressed'" \
+        "$TEMP_DIR/${BASENAME}.zst"
+else
+    echo "zstd not installed, skipping..."
+    echo
+fi
+
+rm -rf "$TEMP_DIR"
+
+echo -e "${BOLD}=== Benchmark Complete ===${NC}"
+
+===== END benchmarks_macos/compare.sh =====

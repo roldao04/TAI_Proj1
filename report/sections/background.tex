@@ -1,22 +1,14 @@
 \section{Background}
 \label{sec:background}
 
-% TODO: Fill in background theory
-% Suggested subsections:
-% - Information Theory Fundamentals (entropy, Shannon's theorem)
-% - Burrows-Wheeler Transform
-% - Prediction by Partial Matching (PPM)
-% - Entropy Coding (Arithmetic, Range, rANS)
-% - Related Work (comparison with gzip, bzip2, xz, zstd)
-
 \subsection{Information Theory}
-% TODO: Entropy, information content, theoretical compression limits
+Shannon's source coding view remains the right abstraction for this project: compression is only possible when the source is not uniformly random and the model can exploit that deviation from randomness \cite{shannon1948}. Entropy estimates were therefore used in the repository as a simple decision signal for model selection and for falling back to uncompressed output on near-random files.
 
 \subsection{Transform Coding}
-% TODO: BWT, MTF, RLE preprocessing techniques
+The Burrows--Wheeler Transform (BWT) rearranges a block so that symbols occurring in similar contexts become clustered \cite{burrows1994}. On its own, BWT is reversible but not compressive; its value comes from making the transformed stream easier to encode. The usual follow-up is Move-to-Front (MTF), which converts these clusters into many small ranks, often producing long runs of zeros. A lightweight run-length stage can then exploit those zeros before entropy coding.
 
 \subsection{Statistical Modeling}
-% TODO: Order-0, Order-1, PPM models and escape mechanisms
+For the modeling stage, the repository explores both order-0 and order-1 byte models. Order-0 uses only global symbol frequencies, while order-1 conditions the next byte on the previous byte and is therefore closer to a practical Prediction by Partial Matching (PPM) scheme \cite{cleary1984}. The order-1 path must also define an escape mechanism for unseen symbols so that the encoder and decoder can safely fall back to a lower-order distribution.
 
 \subsection{Entropy Coding}
-% TODO: Range coding and rANS principles
+The main statistical line of development uses range coding as the core entropy coder \cite{rissanen1979,schindler1998}. The repository also experiments with rANS as a faster static alternative \cite{duda2009}. In contrast, the late \texttt{g07-v8} experiment deliberately removes entropy coding and uses an LZ77-style token stream instead \cite{ziv1977,colletlz4}; this makes it useful as a speed comparison, but not as the main statistical design.

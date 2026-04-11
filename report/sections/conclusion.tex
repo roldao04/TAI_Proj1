@@ -1,36 +1,14 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-% TODO: Fill in conclusions
-% Suggested structure:
-% - Summary of achievements
-% - Key insights and lessons learned
-% - Limitations and challenges
-% - Future work
-
 \subsection{Summary of Achievements}
-% TODO: Summarize key results
-% - 54.73\% average compression ratio
-% - Beat bzip2 on 5/8 files
-% - 16.71pp improvement from v1.0 to v5.0
-% - 2-5× speedup with parallelization
+The repository demonstrates a credible lossless compression project built around the modeling/coding principles emphasized in the course. In the refreshed benchmark set, \texttt{g07-v9} is the strongest G07 variant in compression ratio at 54.40\%, while \texttt{g07-v8} is the fastest project variant. Even so, \texttt{g07-v5} remains the best overall balance: it combines BWT-based preprocessing, adaptive order-1 modeling, and entropy coding into a compressor that stays close to \texttt{g07-v9} in ratio while avoiding the extreme search cost of that version.
 
 \subsection{Lessons Learned}
-% TODO: What worked well, what didn't
-% - BWT preprocessing effectiveness
-% - Importance of adaptive models
-% - Benefits of parallel processing
-% - v6.1 failed experiment insights (static weights vs adaptive)
+Three lessons stand out. First, preprocessing and modeling must be designed together: BWT and MTF were valuable not by themselves, but because they made the downstream model easier to code efficiently. Second, many of the final gains came from engineering details such as better data structures, escape handling, block scheduling, and broader candidate selection rather than from one dramatic algorithmic change. Third, the late \texttt{g07-v8} experiment shows that speed and ratio can diverge sharply; removing entropy coding produces an excellent throughput-oriented compressor, but not one that serves the same objective.
 
 \subsection{Limitations}
-% TODO: Current limitations
-% - Rank-255 ZRLE issue affecting files G and H
-% - Memory usage (8GB max)
-% - Single-threaded entropy coding
+The main limitations are visible on difficult binary-heavy files, where even the stronger statistical variants still lose to specialized baselines such as xz or bzip2 on particular corpus members. The repository also shows that pushing ratio further, as in \texttt{g07-v9}, can incur a very large runtime cost, which reinforces the need to distinguish between best compression and best overall practical balance.
 
 \subsection{Future Work}
-% TODO: Potential improvements
-% - Adaptive context mixing (PAQ-style)
-% - Better ZRLE implementation
-% - Further parallelization
-% - Streaming mode for large files
+Future work could therefore follow two directions. One direction is to keep the \texttt{g07-v5}/\texttt{g07-v9} statistical philosophy and reduce the cost of broader candidate search while improving difficult cases through better transforms or stronger adaptive models. The other is to continue the \texttt{g07-v8} direction as a separate high-throughput compressor for scenarios where speed matters more than compactness. The most important result of the project is that the repository now contains evidence for all three trade-off points, supported by a common benchmark methodology.

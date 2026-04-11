@@ -8,7 +8,6 @@
 \usepackage{url}            % simple URL typesetting
 \usepackage{booktabs}       % professional-quality tables
 \usepackage{amsfonts}       % blackboard math symbols
-\usepackage{nicefrac}       % compact symbols for 1/2, etc.
 \usepackage{microtype}      % microtypography
 \usepackage{graphicx}
 \usepackage{listings}       % code listings
@@ -49,7 +48,7 @@
 \maketitle
 
 \begin{abstract}
-This report presents a comprehensive study of lossless data compression techniques, culminating in the development of an efficient compression tool for the Algorithmic Information Theory (TAI) course. Our implementation combines Burrows-Wheeler Transform (BWT) preprocessing with adaptive Prediction by Partial Matching (PPM) models and multiple entropy coding techniques including Range Coding and Asymmetric Numeral Systems (rANS). Through iterative optimization across six major versions, we achieved an average compression ratio of 54.73\% on benchmark datasets, outperforming bzip2 by 0.20 percentage points and winning on 5 out of 8 test files. The final production system (v5.0) incorporates full pipeline parallelism, achieving 2-5× compression speedup while maintaining competitive ratios. This work demonstrates the effectiveness of combining classical preprocessing transforms with modern entropy coding and parallel processing techniques.
+We developed and benchmarked a lossless compression tool for the TAI course project, centered on statistical coding methods based on range-coder-style entropy coding. The repository now exposes three distinct design points. \texttt{g07-v9} is the strongest compression-oriented project variant in the current benchmark snapshot, reaching a 54.40\% average compressed size on the 8-file corpus (13 MiB total). \texttt{g07-v8} is the fastest G07 variant in average compression and decompression time, using an LZ77-style token stream without entropy coding and averaging 26 ms compression and 24 ms decompression. Even so, the most balanced overall design is \texttt{g07-v5}: it combines BWT, MTF, optional zero-run encoding, and an adaptive order-1 model with range coding/rANS backends, achieving 54.77\% while remaining far faster to compress than \texttt{g07-v9} and much more compact than \texttt{g07-v8}. The resulting comparison highlights the main project trade-off between compression strength, throughput, and overall practical balance.
 \end{abstract}
 
 % Keywords

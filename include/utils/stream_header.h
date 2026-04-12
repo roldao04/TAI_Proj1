@@ -29,7 +29,8 @@ enum TransformFlag : uint8_t {
     TRANSFORM_ZRLE   = 1 << 2,
     TRANSFORM_LZP    = 1 << 3,
     TRANSFORM_WFC    = 1 << 4,  // WFC used instead of standard MTF
-    TRANSFORM_ORDER2 = 1 << 5   // Order-2 context model active
+    TRANSFORM_ORDER2 = 1 << 5,  // Order-2 context model active
+    TRANSFORM_X86    = 1 << 6   // x86 CALL/JMP rel32 filter active
 };
 
 struct Header {

@@ -15,7 +15,7 @@ BIN = bin
 # ============================================
 # SHARED OBJECTS (all versions)
 # ============================================
-SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o $(OBJ)/lzp.o \
+SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o $(OBJ)/lzp.o $(OBJ)/x86_filter.o \
          $(OBJ)/range_coder.o $(OBJ)/rans_static.o \
          $(OBJ)/bit_arithmetic_coder.o \
          $(OBJ)/file_io.o $(OBJ)/entropy_calculator.o \
@@ -39,6 +39,9 @@ V8_MODELS =
 
 # v9 specific models (same as v7 - bit-level PPM with adaptive mixing)
 V9_MODELS = $(V7_MODELS)
+
+# v9 specific models (same model set as v5)
+V9_MODELS = $(V5_MODELS)
 
 # ============================================
 # AUTO-DETECT AVAILABLE VERSIONS
@@ -121,6 +124,10 @@ $(OBJ)/lzp.o: $(SRC)/transform/lzp.cpp | $(OBJ)
 	@echo "Compiling lzp.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(OBJ)/x86_filter.o: $(SRC)/transform/x86_filter.cpp | $(OBJ)
+	@echo "Compiling x86_filter.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
 # Shared arithmetic coders
 $(OBJ)/range_coder.o: $(SRC)/arithmetic/range_coder.cpp | $(OBJ)
 	@echo "Compiling range_coder.cpp..."
@@ -141,6 +148,18 @@ $(OBJ)/frequency_model.o: $(SRC)/model/frequency_model.cpp | $(OBJ)
 
 $(OBJ)/context_model.o: $(SRC)/model/context_model.cpp | $(OBJ)
 	@echo "Compiling context_model.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/test_context_model.o: tests/test_context_model.cpp | $(OBJ)
+	@echo "Compiling test_context_model.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/test_lzp.o: tests/test_lzp.cpp | $(OBJ)
+	@echo "Compiling test_lzp.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/test_x86_filter.o: tests/test_x86_filter.cpp | $(OBJ)
+	@echo "Compiling test_x86_filter.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ)/multi_order_ppm.o: $(SRC)/model/multi_order_ppm.cpp | $(OBJ)
@@ -235,6 +254,18 @@ endif
 benchmark: all
 	@echo "Running comprehensive benchmark (all versions on all files)..."
 	@bash benchmarks/benchmark.sh
+
+$(BIN)/test_context_model: $(OBJ)/test_context_model.o $(OBJ)/context_model.o $(OBJ)/range_coder.o | $(BIN)
+	@echo "Linking test_context_model..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_lzp: $(OBJ)/test_lzp.o $(OBJ)/lzp.o $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o $(OBJ)/libsais.o | $(BIN)
+	@echo "Linking test_lzp..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_x86_filter: $(OBJ)/test_x86_filter.o $(OBJ)/x86_filter.o | $(BIN)
+	@echo "Linking test_x86_filter..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
 
 # ============================================
 # PROFILE-GUIDED OPTIMIZATION

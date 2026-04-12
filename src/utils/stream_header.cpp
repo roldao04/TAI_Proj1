@@ -75,6 +75,10 @@ void read_bwt_metadata(const std::vector<uint8_t>& data,
 std::string describe_preprocessed_order(const Header& header, const std::string& base_name) {
     std::string description = base_name;
 
+    if (has_flag(header.transform_flags, TRANSFORM_X86)) {
+        description += "+X86";
+    }
+
     if (!header.uses_bwt()) {
         return description;
     }
@@ -260,7 +264,7 @@ std::string describe_model_type(const Header& header) {
         case ModelType::ORDER_1_PREPROC:
             return describe_preprocessed_order(header, "Order-1");
         case ModelType::PARALLEL:
-            return "Parallel (per-block BWT+MTF+ZRLE+Order-1)";
+            return "Parallel (per-block candidate search)";
         case ModelType::RANS_ORDER_0:
             return "rANS Order-0 (static)";
         case ModelType::RANS_INTERLEAVED_BWT_MTF:

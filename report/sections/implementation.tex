@@ -1,27 +1,19 @@
 \section{Implementation}
 \label{sec:implementation}
 
-% TODO: Fill in implementation details
-% Suggested structure:
-% - Key data structures
-% - Critical algorithms
-% - Optimization techniques
-% - Parallel processing approach
-
-\subsection{Burrows-Wheeler Transform}
-% TODO: Implementation using libsais, block-based processing
+\subsection{BWT-Based Statistical Line}
+The main statistical line in the repository is block-oriented. In \texttt{g07-v5}, structured data is passed through BWT so that symbols occurring in similar contexts are grouped together. This creates the distributional skew later exploited by MTF and entropy coding. The implementation history shows that larger and better-balanced blocks improved compression because they preserved more context across each transform pass.
 
 \subsection{Move-to-Front and Run-Length Encoding}
-% TODO: MTF implementation, RLE0 bijective encoding
+After BWT, the transformed block is passed through MTF. This turns repeated local symbol clusters into many low ranks, especially zeros. A zero-run stage is then optionally applied to shrink long zero runs further. The value of this preprocessing chain is practical rather than theoretical: it reshapes the byte stream into a form that a simple context model can code effectively. The repository notes one important limitation here, namely the handling of rank 255 in the zero-run stage, which helps explain why some binary-heavy files remain difficult.
 
-\subsection{PPM Model}
-% TODO: Flat array context model, Method C exclusions, PPMD singleton escape
+\subsection{Context Models and Coders}
+The statistical core of \texttt{g07-v5} is an adaptive order-1 model implemented over flat arrays instead of pointer-heavy dynamic structures. This keeps the model compact and cache-friendly. The design also incorporates a PPM-style escape path: when the current order-1 context cannot emit a symbol directly, the coder escapes to a lower-order distribution. Two refinements described in the repository are especially relevant: Method C exclusions, which remove already-seen symbols from the fallback distribution, and singleton-based escape estimation, which makes escape probabilities depend on how many symbols are still weakly supported in the current context.
 
-\subsection{Entropy Coders}
-% TODO: Range coder implementation, rANS integration
+The compliant coding stage is based on range coding, with rANS used in some static order-0 cases as a faster alternative backend. In architectural terms, \texttt{g07-v5} remains a modeling-first compressor: preprocessing and prediction define a probability model, and the coder converts that model into the final bitstream.
 
-\subsection{Parallel Processing}
-% TODO: Full pipeline parallelism, pbzip2-style approach
+\subsection{From v5 to v9}
+The main architectural change in \texttt{g07-v9} is that it no longer commits to one preprocessing path for the entire file. Instead, it performs parallel per-block candidate search over raw, BWT-based, LZP-prefiltered, and x86-filtered variants, and it can choose between order-1 and order-2 statistical models. The selected block configuration is stored with explicit parallel-header metadata and transform flags, allowing the decompressor to replay the exact sequence of transforms. This broader search explains why \texttt{g07-v9} improves ratio over \texttt{g07-v5}, but it also explains the much larger compression cost.
 
-\subsection{Performance Optimizations}
-% TODO: Allocation-free encoding, decode loop optimizations, LTO
+\subsection{Speed-Oriented Variant}
+By contrast, \texttt{g07-v8} follows a much simpler implementation strategy. It uses a single-pass LZ77-style matcher with a small hash table, byte-aligned tokens, and no entropy coder. This makes the code much smaller and much faster, but it also removes the stronger statistical modeling that makes \texttt{g07-v5} and \texttt{g07-v9} competitive on compression ratio.

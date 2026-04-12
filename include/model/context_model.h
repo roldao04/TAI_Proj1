@@ -38,9 +38,9 @@ public:
     };
 
     // Fixed-size result: avoids heap allocation in the hot encode loop.
-    // Always holds 1 or 2 steps (1 = direct order-1, 2 = escape + order-0).
+    // Holds up to 3 stages for O2 -> O1 -> O0 encoding cascades.
     struct EncodeResult {
-        EncodingStep steps[2];
+        EncodingStep steps[3];
         int count;
     };
 
@@ -69,25 +69,24 @@ private:
     uint32_t singleton1_[256]; // symbols with freq == 1 (PPMD escape estimator)
     bool     ctx_exists_[256]; // has this context been initialised?
 
-    // ── Order-2 (hashed, heap-allocated) ────────────────────────────────
-    static const int O2_HASH_BITS = 12;
-    static const int O2_HASH_SIZE = 1 << O2_HASH_BITS;  // 4096
-    static const uint32_t O2_WARMUP_SIZE = 3000;  // symbols before O2 activates
+    // ── Order-2 (direct-addressed, heap-allocated on demand) ────────────
+    static const uint32_t O2_CONTEXT_COUNT = 1u << 16;
+    static const uint32_t O2_WARMUP_SIZE = 128;
 
     bool     use_order2_;
     uint8_t  prev_prev_byte_;
     bool     has_prev_prev_;
     uint32_t o2_symbols_seen_;  // warmup counter: O2 inactive until >= O2_WARMUP_SIZE
 
-    std::vector<uint32_t> freq2_data_;   // O2_HASH_SIZE * EXTENDED_ALPHABET
-    std::vector<uint32_t> total2_;       // O2_HASH_SIZE
-    std::vector<uint32_t> singleton2_;   // O2_HASH_SIZE
-    std::vector<bool>     ctx2_exists_;  // O2_HASH_SIZE
+    std::vector<uint32_t> freq2_data_;   // O2_CONTEXT_COUNT * EXTENDED_ALPHABET
+    std::vector<uint32_t> total2_;       // O2_CONTEXT_COUNT
+    std::vector<uint32_t> singleton2_;   // O2_CONTEXT_COUNT
+    std::vector<uint8_t>  ctx2_exists_;  // O2_CONTEXT_COUNT
 
-    uint16_t order2_hash() const;
-    uint32_t*       freq2_ptr(uint16_t hash);
-    const uint32_t* freq2_ptr(uint16_t hash) const;
-    void rescale_order2(uint16_t hash);
+    uint16_t order2_context_key() const;
+    uint32_t*       freq2_ptr(uint16_t key);
+    const uint32_t* freq2_ptr(uint16_t key) const;
+    void rescale_order2(uint16_t key);
 
     // ── History ───────────────────────────────────────────────────────────
     uint8_t  prev_byte_;
@@ -163,6 +162,15 @@ public:
     // Method C: exclusion-based helpers (no heap allocation)
     // Returns pointer to current Order-1 context freq array (valid while prev_byte_ unchanged)
     const uint32_t* get_order1_freq_ptr() const { return freq1_[prev_byte_]; }
+    const uint32_t* get_order2_freq_ptr() const;
+    uint32_t get_order1_total_excl_ctx(const uint32_t* excluded_ctx_freq) const;
+    bool get_order1_symbol_range_excl_ctx(int symbol, const uint32_t* excluded_ctx_freq,
+                                          uint32_t& lo, uint32_t& hi, uint32_t& total) const;
+    int find_symbol_and_get_range_order1_excl_ctx(uint32_t target, const uint32_t* excluded_ctx_freq,
+                                                  uint32_t& lo, uint32_t& hi, uint32_t& total) const;
+    int find_symbol_and_get_range_order1_excl_ctx(uint32_t target, const uint32_t* excluded_ctx_freq,
+                                                  uint32_t precomputed_total,
+                                                  uint32_t& lo, uint32_t& hi, uint32_t& total) const;
     uint32_t get_order0_total_excl_ctx(const uint32_t* ctx_freq) const;
     // Fused find+range for Order-0 excluding symbols seen in ctx_freq
     int find_symbol_and_get_range_excl_ctx(uint32_t target, const uint32_t* ctx_freq,

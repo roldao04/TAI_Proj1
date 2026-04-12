@@ -22,21 +22,22 @@
 #include "model/context_mixer.h"
 #include "arithmetic/bit_arithmetic_coder.h"
 
-struct V7Header {
-    uint8_t model_type;          // 0x0B for v7.0
+struct V9Header {
+    uint8_t model_type;          // 0x09 for v9.0 (parameterized)
     uint64_t original_size;      // Original file size
     uint64_t processed_size;     // Size after BWT/MTF/ZRLE preprocessing
     uint8_t config_byte;         // BWT/MTF/ZRLE flags
     uint32_t bwt_primary_index;  // BWT primary index (if BWT enabled)
     uint8_t num_bit_orders;      // Number of bit orders
     std::vector<int> bit_orders; // Bit order values
+    double learning_rate;        // Adaptive mixer learning rate
     bool use_bwt;
     bool use_mtf;
     bool use_zrle;
 };
 
-V7Header parse_v7_header(const std::vector<uint8_t>& data, size_t& offset) {
-    V7Header header;
+V9Header parse_v9_header(const std::vector<uint8_t>& data, size_t& offset) {
+    V9Header header;
 
     if (data.size() < 12) {
         throw std::runtime_error("File too small to contain valid header");
@@ -45,10 +46,10 @@ V7Header parse_v7_header(const std::vector<uint8_t>& data, size_t& offset) {
     // Model type
     header.model_type = data[offset++];
 
-    if (header.model_type != 0x0B) {
-        throw std::runtime_error("Not a v7.0 compressed file (model type: 0x" +
+    if (header.model_type != 0x09) {
+        throw std::runtime_error("Not a v9.0 compressed file (model type: 0x" +
                                 std::to_string((int)header.model_type) +
-                                "). Expected 0x0B for bit-level PPM.");
+                                "). Expected 0x09 for bit-level PPM v9.");
     }
 
     // Original size (8 bytes, little-endian)
@@ -86,7 +87,14 @@ V7Header parse_v7_header(const std::vector<uint8_t>& data, size_t& offset) {
         header.bit_orders.push_back(data[offset++]);
     }
 
-    // No mixer weights in header for v7 adaptive mode
+    // Learning rate (8 bytes, double, little-endian)
+    uint64_t lr_bits = 0;
+    for (int i = 0; i < 8; i++) {
+        lr_bits |= ((uint64_t)data[offset++]) << (i * 8);
+    }
+    std::memcpy(&header.learning_rate, &lr_bits, sizeof(double));
+
+    // No mixer weights in header for v9 adaptive mode
     // Both encoder and decoder start with equal weights and adapt identically
 
     return header;
@@ -94,7 +102,7 @@ V7Header parse_v7_header(const std::vector<uint8_t>& data, size_t& offset) {
 
 std::vector<uint8_t> decode_with_bit_ppm(const std::vector<uint8_t>& encoded,
                                           size_t offset,
-                                          const V7Header& header,
+                                          const V9Header& header,
                                           bool verbose) {
     if (header.processed_size == 0) {
         return std::vector<uint8_t>();
@@ -103,11 +111,11 @@ std::vector<uint8_t> decode_with_bit_ppm(const std::vector<uint8_t>& encoded,
     auto start_time = std::chrono::high_resolution_clock::now();
 
     // Initialize bit-level PPM (same config as encoder)
-    // Use 32M contexts (matches compressor)
+    // Use 32M contexts (matches compressor default)
     BitLevelPPM bit_ppm(header.bit_orders, 32 * 1024 * 1024, 256);
 
-    // Initialize context mixer (same config as encoder)
-    ContextMixer mixer(header.bit_orders.size(), 0.003);
+    // Initialize context mixer with EXACT same learning rate as encoder
+    ContextMixer mixer(header.bit_orders.size(), header.learning_rate);
     // Weights start at 1.0 (equal) and will adapt identically to encoder
 
     if (verbose) {
@@ -115,6 +123,7 @@ std::vector<uint8_t> decode_with_bit_ppm(const std::vector<uint8_t>& encoded,
         std::cout << "Bit orders: ";
         for (int order : header.bit_orders) std::cout << order << " ";
         std::cout << "\n";
+        std::cout << "Learning rate: " << header.learning_rate << "\n";
     }
 
     // Initialize bit arithmetic decoder
@@ -200,7 +209,7 @@ std::vector<uint8_t> decode_with_bit_ppm(const std::vector<uint8_t>& encoded,
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         std::cout << "Usage: " << argv[0] << " <compressed_file> <output_file> [--quiet]\n\n";
-        std::cout << "Decompresses files created by compress_v7\n";
+        std::cout << "Decompresses files created by compress_v9\n";
         return 1;
     }
 
@@ -217,8 +226,8 @@ int main(int argc, char* argv[]) {
 
     if (verbose) {
         std::cout << "╔══════════════════════════════════════════╗\n";
-        std::cout << "║  Lossless Decompression Tool v7.0       ║\n";
-        std::cout << "║  Bit-Level PPM Decompressor             ║\n";
+        std::cout << "║  Lossless Decompression Tool v9.0       ║\n";
+        std::cout << "║  Bit-Level PPM (Parameterized)          ║\n";
         std::cout << "║  Group 07 - Universidade de Aveiro     ║\n";
         std::cout << "╚══════════════════════════════════════════╝\n\n";
     }
@@ -244,9 +253,9 @@ int main(int argc, char* argv[]) {
 
     // Parse header
     size_t offset = 0;
-    V7Header header;
+    V9Header header;
     try {
-        header = parse_v7_header(compressed_data, offset);
+        header = parse_v9_header(compressed_data, offset);
     } catch (const std::exception& e) {
         std::cerr << "Error parsing header: " << e.what() << std::endl;
         return 1;

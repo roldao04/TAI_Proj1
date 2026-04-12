@@ -34,6 +34,12 @@ V6_MODELS = $(V5_MODELS) $(OBJ)/multi_order_ppm.o \
 # v7 specific models (v6 + bit-level PPM)
 V7_MODELS = $(V6_MODELS) $(OBJ)/bit_ppm.o
 
+# v8 specific models (minimal - LZ77 only, no PPM)
+V8_MODELS =
+
+# v9 specific models (same as v7 - bit-level PPM with adaptive mixing)
+V9_MODELS = $(V7_MODELS)
+
 # ============================================
 # AUTO-DETECT AVAILABLE VERSIONS
 # ============================================
@@ -182,6 +188,12 @@ clean:
 	rm -rf $(OBJ) $(BIN)
 	@echo "Clean complete"
 
+clean-results:
+	@echo "Cleaning benchmark results..."
+	@rm -f benchmarks/results.csv benchmarks/results.md
+	@rm -rf benchmarks/tmp/*
+	@echo "Results cleaned"
+
 # Check binary sizes (must be < 1MB per teacher requirement)
 check-sizes: all
 	@echo ""
@@ -201,16 +213,28 @@ check-sizes: all
 	done
 	@echo ""
 
-# Test first available version (usually v5)
-test: all
-	@echo "Running quick lossless verification..."
-	@VERSION=$$(echo $(VERSIONS) | cut -d' ' -f1); \
-	echo "Testing g07-v$$VERSION on file A (lossless verification built into benchmark)"; \
-	bash benchmarks/compare.sh data/A
+# Quick test: test single file with single version
+# Usage: make test FILE=data/A VERSION=5
+test:
+ifdef FILE
+ifdef VERSION
+	@echo "Testing g07-v$(VERSION) on $(FILE)..."
+	@bash benchmarks/test.sh $(FILE) $(VERSION)
+else
+	@echo "Usage: make test FILE=<file> VERSION=<version>"
+	@echo "Example: make test FILE=data/A VERSION=5"
+	@exit 1
+endif
+else
+	@echo "Usage: make test FILE=<file> VERSION=<version>"
+	@echo "Example: make test FILE=data/A VERSION=5"
+	@exit 1
+endif
 
+# Full benchmark: all versions on all files
 benchmark: all
-	@echo "Running benchmarks..."
-	@bash benchmarks/benchmark_all.sh
+	@echo "Running comprehensive benchmark (all versions on all files)..."
+	@bash benchmarks/benchmark.sh
 
 # ============================================
 # PROFILE-GUIDED OPTIMIZATION

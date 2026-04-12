@@ -35,15 +35,12 @@
 #include "arithmetic/bit_arithmetic_coder.h"
 
 // Configuration
-struct V7Config {
-    // Optimized bit orders for balance between coverage and learning speed
-    // Order-2: Very short patterns (2 bits)
-    // Order-4,8: Short contexts (0.5-1 byte) - most important
-    // Order-12,16: Medium contexts (1.5-2 bytes)
-    // Order-24: Long context (3 bytes)
+struct V9Config {
+    // Bit orders: context sizes in bits (default from roadmap Phase 2)
+    // Can be customized via --bit-orders flag
     std::vector<int> bit_orders = {2, 4, 8, 12, 16, 24};
-    size_t hash_table_size = 32 * 1024 * 1024;           // 32M contexts (~400MB RAM) - balanced
-    double learning_rate = 0.003;                        // Slightly higher for faster adaptation
+    size_t hash_table_size = 32 * 1024 * 1024;           // 32M contexts (~400MB RAM)
+    double learning_rate = 0.003;                        // Adaptive mixing learning rate
     bool use_bwt = true;                                 // Enable BWT preprocessing
     bool use_mtf = true;                                 // Enable MTF transform
     bool use_zrle = true;                                // Enable zero-run RLE
@@ -52,23 +49,26 @@ struct V7Config {
 
 void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <input_file> <output_file> [options]\n\n";
-    std::cout << "v7.0 Options (Bit-Level PPM - Enhanced):\n";
-    std::cout << "  --bit-orders <list>   Comma-separated bit orders (default: 1,2,4,6,8,12,16,20,24,32)\n";
-    std::cout << "  --hash-size <M>       Hash table size in millions (default: 64)\n";
-    std::cout << "  --learning-rate <lr>  Mixer learning rate (default: 0.002)\n";
+    std::cout << "v9.0 Options (Bit-Level PPM - Parameterized for Testing):\n";
+    std::cout << "  --bit-orders <list>   Comma-separated bit orders (default: 2,4,8,12,16,24)\n";
+    std::cout << "                        Examples: 4,8,12,16,24 | 4,8,16,32 | 8,16,24\n";
+    std::cout << "  --learning-rate <lr>  Mixer learning rate (default: 0.003)\n";
+    std::cout << "                        Range: 0.001-0.02 | Roadmap: 0.002\n";
+    std::cout << "  --hash-size <M>       Hash table size in millions (default: 32)\n";
+    std::cout << "                        Options: 32, 64, 128, 256\n";
     std::cout << "  --no-bwt              Disable BWT preprocessing\n";
     std::cout << "  --no-mtf              Disable MTF transform\n";
     std::cout << "  --no-zrle             Disable zero-run RLE\n";
     std::cout << "  --quiet               Minimal output\n";
     std::cout << "  --yes, -y             Skip prompts\n";
-    std::cout << "\nNote: v7.0 uses PAQ-style bit-level prediction with 10 context orders\n";
+    std::cout << "\nNote: v9.0 is experimental - use for parameter testing\n";
 }
 
 /**
  * Encode data using bit-level PPM with adaptive context mixing
  */
 std::vector<uint8_t> encode_with_bit_ppm(const std::vector<uint8_t>& data,
-                                          const V7Config& config) {
+                                          const V9Config& config) {
     if (data.empty()) {
         return std::vector<uint8_t>();
     }
@@ -167,12 +167,26 @@ int main(int argc, char* argv[]) {
     std::string output_file = argv[2];
 
     // Parse configuration
-    V7Config config;
-    bool skip_prompts = false;
+    V9Config config;
+    bool skip_prompts = true;  // Default to no prompts for automation
 
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--no-bwt") {
+        if (arg == "--bit-orders" && i + 1 < argc) {
+            // Parse comma-separated list of bit orders
+            config.bit_orders.clear();
+            std::string orders_str = argv[++i];
+            size_t pos = 0;
+            while ((pos = orders_str.find(',')) != std::string::npos) {
+                config.bit_orders.push_back(std::stoi(orders_str.substr(0, pos)));
+                orders_str.erase(0, pos + 1);
+            }
+            config.bit_orders.push_back(std::stoi(orders_str));
+        } else if (arg == "--learning-rate" && i + 1 < argc) {
+            config.learning_rate = std::stod(argv[++i]);
+        } else if (arg == "--hash-size" && i + 1 < argc) {
+            config.hash_table_size = std::stoull(argv[++i]) * 1024 * 1024;
+        } else if (arg == "--no-bwt") {
             config.use_bwt = false;
         } else if (arg == "--no-mtf") {
             config.use_mtf = false;
@@ -182,21 +196,19 @@ int main(int argc, char* argv[]) {
             config.verbose = false;
         } else if (arg == "--yes" || arg == "-y") {
             skip_prompts = true;
-        } else if (arg == "--hash-size" && i + 1 < argc) {
-            config.hash_table_size = std::stoull(argv[++i]) * 1024 * 1024;
-        } else if (arg == "--learning-rate" && i + 1 < argc) {
-            config.learning_rate = std::stod(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
         }
     }
 
-    std::cout << "╔══════════════════════════════════════════╗\n";
-    std::cout << "║  Lossless Compression Tool v7.0         ║\n";
-    std::cout << "║  Bit-Level PPM with Adaptive Mixing     ║\n";
-    std::cout << "║  Group 07 - Universidade de Aveiro     ║\n";
-    std::cout << "╚══════════════════════════════════════════╝\n\n";
+    if (config.verbose) {
+        std::cout << "╔══════════════════════════════════════════╗\n";
+        std::cout << "║  Lossless Compression Tool v9.0         ║\n";
+        std::cout << "║  Bit-Level PPM (Parameterized)          ║\n";
+        std::cout << "║  Group 07 - Universidade de Aveiro     ║\n";
+        std::cout << "╚══════════════════════════════════════════╝\n\n";
+    }
 
     // Read input file
     std::cout << "Reading input file: " << input_file << "\n";
@@ -213,15 +225,27 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "Input size: " << input_data.size() << " bytes\n";
+    if (config.verbose) {
+        std::cout << "Input size: " << input_data.size() << " bytes\n";
 
-    // Calculate entropy
-    double entropy = EntropyCalculator::calculate(input_data);
-    std::cout << "Entropy: " << entropy << " bits/symbol\n";
+        // Calculate entropy
+        double entropy = EntropyCalculator::calculate(input_data);
+        std::cout << "Entropy: " << entropy << " bits/symbol\n";
 
-    std::cout << "BWT preprocessing: " << (config.use_bwt ? "ENABLED" : "DISABLED") << "\n";
-    std::cout << "MTF transform: " << (config.use_mtf ? "ENABLED" : "DISABLED") << "\n";
-    std::cout << "ZRLE: " << (config.use_zrle ? "ENABLED" : "DISABLED") << "\n";
+        // Display configuration
+        std::cout << "\nConfiguration:\n";
+        std::cout << "  Bit orders: ";
+        for (size_t i = 0; i < config.bit_orders.size(); i++) {
+            std::cout << config.bit_orders[i];
+            if (i < config.bit_orders.size() - 1) std::cout << ",";
+        }
+        std::cout << "\n";
+        std::cout << "  Learning rate: " << config.learning_rate << "\n";
+        std::cout << "  Hash table: " << (config.hash_table_size / (1024 * 1024)) << "M contexts\n";
+        std::cout << "  BWT: " << (config.use_bwt ? "ENABLED" : "DISABLED") << "\n";
+        std::cout << "  MTF: " << (config.use_mtf ? "ENABLED" : "DISABLED") << "\n";
+        std::cout << "  ZRLE: " << (config.use_zrle ? "ENABLED" : "DISABLED") << "\n";
+    }
 
     // Warning about speed
     if (!skip_prompts) {
@@ -294,8 +318,8 @@ int main(int argc, char* argv[]) {
     // Write output file with header
     std::vector<uint8_t> output_data;
 
-    // Header: model type (0x0B = BIT_LEVEL_PPM_V7)
-    output_data.push_back(0x0B);
+    // Header: model type (0x09 = BIT_LEVEL_PPM_V9 - parameterized)
+    output_data.push_back(0x09);
 
     // Original size (8 bytes, little-endian)
     uint64_t original_size = input_data.size();
@@ -329,6 +353,14 @@ int main(int argc, char* argv[]) {
     // Bit order values
     for (int order : config.bit_orders) {
         output_data.push_back((uint8_t)order);
+    }
+
+    // Learning rate (8 bytes, double, little-endian)
+    // CRITICAL: Decoder must use same learning rate for identical weight updates
+    uint64_t lr_bits;
+    std::memcpy(&lr_bits, &config.learning_rate, sizeof(double));
+    for (int i = 0; i < 8; i++) {
+        output_data.push_back((uint8_t)(lr_bits >> (i * 8)));
     }
 
     // No mixer weights stored - both encoder and decoder start with equal weights

@@ -235,7 +235,7 @@ int main(int argc, char* argv[]) {
 
     // Parse configuration
     V6Config config;
-    bool skip_prompts = false;
+    bool skip_prompts = true;  // Default to no prompts for automation
 
     for (int i = 3; i < argc; i++) {
         std::string arg = argv[i];

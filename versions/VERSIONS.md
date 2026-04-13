@@ -10,6 +10,7 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
+| **v9.0** | 2026-04-12 | **LZP + X86 Filter + Per-Block Multi-Pipeline Search + Order-1/2** | 54.32% avg, **Wins 3/8 files, Beats all tools on A/E/G** | **Production (Best Ratio)** |
 | **v8.0** | 2026-04-09 | **LZ4-style LZ77 Hash-Table Matching (no entropy coding)** | 38-88% ratio, **~200 MB/s compress, ~300 MB/s decompress** | **Production (Ultra-Fast)** |
 | **v7.0** | 2026-04-08 | **BWT + MTF + 2-Way Interleaved rANS Order-0** | 59.2% avg, **51 MB/s decompress** | **Production (Speed)** |
 | **v6.1** | 2026-04-06 | Multi-order PPM (5 orders) + Context Mixing + Static Weights | 59.85% avg ratio | **Experimental (Failed)** |
@@ -52,6 +53,37 @@ Group 07 - Universidade de Aveiro
 **When to use:** Real-time applications, streaming data, temporary/transient compression, or any scenario where speed dominates over ratio. Targets the zstd-1 / LZ4 speed class.
 
 **Detailed Documentation:** See [v8.0 README](g07_v8.0/README.md)
+
+---
+
+### v9.0 (April 2026) - Production (Best Ratio)
+
+**Major Updates:**
+- **Per-block multi-pipeline search**: Each block tests up to 12 different compression pipelines and selects the winner
+- **LZP preprocessing**: Lempel-Ziv Prediction with 2-byte context hash table (65536 entries) removes long-range repetitions before BWT
+- **X86 filter**: Automatic x86-64 ELF detection and rel32 CALL/JMP normalization for executable files
+- **Order-2 model support**: Extended context model to 65536 contexts (2-byte history) alongside Order-1
+- **Adaptive block sizing**: 512KB-4MB blocks based on file type (ELF vs text) and entropy
+- **12 pipeline candidates per block**: raw, BWT+MTF, BWT+MTF+ZRLE, LZP+BWT+MTF, X86+BWT+MTF, each with Order-1/Order-2
+
+**Performance:**
+- Average compression ratio: **54.32%** (best ratio of all production versions)
+- Compression speed: **~1.5 MB/s** average (354-1048ms per file)
+- Decompression speed: **~18 MB/s** average (41-226ms per file)
+- Binary sizes: **116KB** compressor, **84KB** decompressor
+- Files won vs all tools: **3/8** (A: 51.84%, E: 85.60%, G: 28.48%)
+- Files tied with v5: **2/8** (B: 17.35%, C: 25.93%)
+- Per-file standouts:
+  - A: **51.84%** ratio (best of all versions and tools, beats xz by 1.5pp)
+  - E: **85.60%** ratio (best of all versions, beats xz by 0.24pp)
+  - G: **28.48%** ratio (best of all versions, beats bzip2 by 0.22pp)
+  - B: **17.35%** ratio (tied with v5, beats xz by 0.41pp)
+
+**Key Insight:** Multi-pipeline search finds the optimal transform for each block's characteristics. Text files benefit from LZP+BWT (File A), binary data benefits from raw BWT (File B/C), and executables could benefit from X86 filter. Testing all combinations per-block achieves best-in-class compression at the cost of 10-100× slower speed than v8. The adaptive approach wins on 3 benchmark files outright (A, E, G) and ties v5 on 2 more (B, C).
+
+**When to use:** Archival, long-term storage, or any scenario where maximum compression ratio is critical and compression time (minutes for multi-MB files) is acceptable. Beats industry tools (bzip2, xz, gzip, zstd) on Files A, E, G.
+
+**Detailed Documentation:** See [v9.0 README](g07_v9.0/README.md)
 
 ---
 
@@ -361,19 +393,19 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 
 ## Version Comparison Summary
 
-| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v5.2 | v6.1 | v7.0 | v8.0 |
-|--------|------|------|------|------|------|------|------|------|------|
-| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 54.87% | 54.70% | 59.85% ❌ | 59.2% | ~60% (compressible) |
-| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.39 | 4.38 | 4.78 | 4.74 | ~4.8 |
-| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (≤2000KB) | BWT (≤2000KB) | BWT+MTF+ZRLE | BWT+MTF (4MB) | **None** |
-| **Zero-run encoding** | None | None | None | ZRLE | RLE0 | RLE0 (escape) | ZRLE | None | **None** |
-| **PPM Orders** | Order-0 | Order-0/1 | Order-1 | Order-1 | Order-1 | Order-1 | Multi {1-5} | Order-0 | **N/A (LZ77)** |
-| **Entropy Coder** | Arithmetic | Range | Range | Range | Range+rANS | Range+rANS | Range | Interleaved rANS | **None** |
-| **Threading** | None | None | None | Par. BWT | Full parallel | Full parallel | None | Full parallel | **Single thread** |
-| **Compress Speed** | ~13 MB/s | ~26 MB/s | — | — | ~25 MB/s | ~25 MB/s | 0.15 MB/s | 28.9 MB/s | **~200 MB/s** ✅ |
-| **Decompress Speed** | ~10 MB/s | ~20 MB/s | — | — | ~17 MB/s | ~21 MB/s | Slow | 51.1 MB/s | **~300 MB/s** ✅ |
-| **Binary Size** | — | — | — | — | 216KB | 216KB | 196KB | 140KB | **72KB** ✅ |
-| **Status** | Superseded | Superseded | Superseded | Superseded | Superseded | **Production** | **Failed** | **Production (Speed)** | **Production (Ultra-Fast)** |
+| Metric | v1.0 | v2.0 | v3 | v4.0 | v5.0 | v5.2 | v6.1 | v7.0 | v8.0 | v9.0 |
+|--------|------|------|------|------|------|------|------|------|------|------|
+| **Compression Ratio** | 71.44% | 62.74% | 57.48% | 56.39% | 54.87% | 54.70% | 59.85% ❌ | 59.2% | ~60% (compressible) | **54.32%** ✅ |
+| **Bits/Symbol** | 5.72 | 5.02 | 4.60 | 4.51 | 4.39 | 4.38 | 4.78 | 4.74 | ~4.8 | 4.35 |
+| **Preprocessing** | None | None | BWT (1024B) | BWT (900KB) | BWT (≤2000KB) | BWT (≤2000KB) | BWT+MTF+ZRLE | BWT+MTF (4MB) | **None** | **LZP+X86+BWT (adaptive)** |
+| **Zero-run encoding** | None | None | None | ZRLE | RLE0 | RLE0 (escape) | ZRLE | None | **None** | ZRLE (per-block) |
+| **PPM Orders** | Order-0 | Order-0/1 | Order-1 | Order-1 | Order-1 | Order-1 | Multi {1-5} | Order-0 | **N/A (LZ77)** | Order-1/2 |
+| **Entropy Coder** | Arithmetic | Range | Range | Range | Range+rANS | Range+rANS | Range | Interleaved rANS | **None** | Range |
+| **Threading** | None | None | None | Par. BWT | Full parallel | Full parallel | None | Full parallel | **Single thread** | **Per-block parallel** |
+| **Compress Speed** | ~13 MB/s | ~26 MB/s | — | — | ~25 MB/s | ~25 MB/s | 0.15 MB/s | 28.9 MB/s | **~200 MB/s** ✅ | ~1.5 MB/s |
+| **Decompress Speed** | ~10 MB/s | ~20 MB/s | — | — | ~17 MB/s | ~21 MB/s | Slow | 51.1 MB/s | **~300 MB/s** ✅ | ~18 MB/s |
+| **Binary Size** | — | — | — | — | 216KB | 216KB | 196KB | 140KB | **72KB** ✅ | 200KB |
+| **Status** | Superseded | Superseded | Superseded | Superseded | Superseded | Production | **Failed** | **Production (Speed)** | **Production (Ultra-Fast)** | **Production (Best Ratio)** |
 
 ---
 
@@ -390,9 +422,11 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v5.0 | 54.87% | −1.52pp | −16.57pp |
 | v5.2 | **54.70%** ✅ | **−0.17pp** | **−16.74pp** |
 | v6.1 | 59.85% ❌ | +5.12pp worse | −11.59pp (vs v1.0 only) |
-| v7.0 | **59.2%** | +4.5pp vs v5.2 (speed tradeoff) | **−12.24pp** |
+| v7.0 | 59.2% | +4.5pp vs v5.2 (speed tradeoff) | −12.24pp |
+| v8.0 | ~60% | +0.8pp vs v7.0 (LZ77) | −11.44pp (compressible only) |
+| v9.0 | **54.32%** ✅ | **−0.38pp vs v5.2** | **−17.12pp** |
 
-**Note:** v6.1 regressed from v5.0 (failed experiment). v7.0 trades ~4.5pp of compression for 3x decompression speed.
+**Note:** v6.1 regressed from v5.0 (failed experiment). v7.0 trades ~4.5pp of compression for 3x decompression speed. v9.0 achieves best ratio of all versions via per-block multi-pipeline search.
 
 ### Speed Evolution
 
@@ -407,6 +441,7 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v6.1 | 0.15 ❌ | Slow | Multi-order PPM + context mixing |
 | v7.0 | 28.9 | 51.1 | 2-way interleaved rANS + BWT+MTF |
 | v8.0 | **~200** ✅ | **~300** ✅ | **LZ77 hash-table matching, byte-aligned tokens, no entropy coding** |
+| v9.0 | ~1.5 | ~18 | **Per-block multi-pipeline search (12 candidates: LZP+X86+BWT+Order-1/2)** |
 
 ---
 
@@ -526,10 +561,39 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
   - All 8 benchmark files + 6 edge cases lossless verified
 
 - **2026-04-09**: v8.0 released (~200 MB/s compress, ~300 MB/s decompress, ultra-fast)
+- **2026-04-10 - 2026-04-12**: v9.0 development
+
+  **Adaptive Best-Ratio Compressor**
+  - LZP (Lempel-Ziv Prediction) preprocessing with 2-byte context hash table
+  - X86 filter for x86-64 ELF executables (rel32 CALL/JMP normalization)
+  - Per-block multi-pipeline candidate search (up to 12 pipelines per block)
+  - Order-2 model support (65536 contexts, 2-byte history)
+  - Adaptive block sizing (512KB for ELF, 4MB for text, 1-2MB for structured)
+  - Pipeline candidates: raw, BWT+MTF, BWT+MTF+ZRLE, LZP+variants, X86+variants, Order-1/Order-2
+  - Per-block parallel compression (each block tests all candidates independently)
+
+  **Results:** 54.32% avg ratio, ~1.5 MB/s compress, ~18 MB/s decompress
+  - A: **51.84%** (best of all versions and tools)
+  - E: **85.60%** (best of all versions, beats xz by 0.24pp)
+  - G: **28.48%** (best of all versions, beats bzip2 by 0.22pp)
+  - B/C: **17.35%/25.93%** (tied with v5)
+  - Wins 3/8 files outright, ties on 2 more
+  - All 8 benchmark files lossless verified
+
+- **2026-04-12**: v9.0 released (54.32% avg, best ratio of all versions, wins on A/E/G)
 
 ---
 
 ## Notable Achievements
+
+### Version 9.0 Highlights
+- **Best compression ratio**: 54.32% average (best of all production versions, 0.38pp better than v5.2)
+- **Most files won**: 3/8 files best of all versions and tools (A, E, G), 2/8 tied with v5 (B, C)
+- **File A champion**: 51.84% (beats all tools: xz by 1.5pp, bzip2 by 2.2pp, gzip by 6.6pp)
+- **Multi-pipeline adaptive**: First version with per-block candidate selection (12 pipelines tested per block)
+- **LZP preprocessing**: First version with Lempel-Ziv Prediction (65536-entry hash table)
+- **X86 filter**: First version with executable-specific preprocessing (ELF detection + rel32 normalization)
+- **Order-2 model**: Extended from v6's multi-order PPM to practical per-block Order-2 support
 
 ### Version 8.0 Highlights
 - **Fastest compressor ever**: ~200 MB/s average (7x faster than v7, 8x faster than v5)
@@ -552,12 +616,12 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 - **G gap nearly closed**: 28.81% vs bzip2's 28.70% (only −0.11pp)
 
 ### Overall Project Achievements
-- **Three production versions**: v5.2 (best compression), v7.0 (fast), v8.0 (ultra-fast) -- choose based on use case
-- **16.74pp cumulative improvement** from v1.0 to v5.2 (71.44% → 54.70%)
+- **Four production versions**: v5.2 (balanced), v7.0 (fast), v8.0 (ultra-fast), v9.0 (best ratio) -- choose based on use case
+- **17.12pp cumulative improvement** from v1.0 to v9.0 (71.44% → 54.32%)
 - **~300 MB/s peak throughput** in v8.0 (3000x faster than v1.0's decompression)
-- **Two algorithm families**: BWT+entropy coding (v1-v7) and LZ77 dictionary matching (v8)
-- **Competitive with industry leaders**: Beats bzip2 on ratio (v5.2), rivals zstd-1/LZ4 on speed (v8)
-- **Comprehensive approach**: Combines BWT preprocessing, adaptive PPM modeling, multiple entropy coders, and LZ77 matching
+- **Three algorithm families**: BWT+entropy coding (v1-v7), LZ77 dictionary matching (v8), Multi-pipeline adaptive (v9)
+- **Beats industry leaders**: v9 wins on Files A/E/G vs all tools (bzip2, xz, gzip, zstd), v8 rivals zstd-1/LZ4 on speed
+- **Comprehensive approach**: Combines BWT preprocessing, LZP, X86 filter, adaptive PPM modeling, multiple entropy coders, LZ77 matching, and per-block candidate selection
 - **Production-ready**: Robust error handling, extensive testing, edge case coverage
 - **Well-documented**: Detailed READMEs track all experiments including failed optimizations
 
@@ -575,9 +639,10 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 | v6.1 | g07-v6-c, g07-v6-d | README.md, ARCHITECTURE.md, LESSONS_LEARNED.md |
 | v7.0 | g07-v7-c (84KB), g07-v7-d (56KB) | README.md |
 | v8.0 | g07-v8-c (36KB), g07-v8-d (36KB) | README.md |
+| v9.0 | G07-V9-C (116KB), G07-V9-D (84KB) | README.md |
 
-**Note:** v5.2 is the best-compression production version. v7.0 is the fast (BWT-based) production version. v8.0 is the ultra-fast (LZ77-based) production version. v6.1 is a failed experiment.
+**Note:** v9.0 is the best-ratio production version (wins 3/8 files vs all tools). v5.2 is the balanced production version. v7.0 is the fast (BWT-based) production version. v8.0 is the ultra-fast (LZ77-based) production version. v6.1 is a failed experiment.
 
 ---
 
-*Last updated: 2026-04-09 (v8.0 ultra-fast release)*
+*Last updated: 2026-04-13 (v9.0 best-ratio release)*

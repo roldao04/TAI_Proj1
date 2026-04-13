@@ -24,27 +24,24 @@ SHARED = $(OBJ)/bwt.o $(OBJ)/mtf.o $(OBJ)/zero_rle.o $(OBJ)/lzp.o $(OBJ)/x86_fil
 # ============================================
 # VERSION-SPECIFIC MODELS
 # ============================================
-# v5 specific models
-V5_MODELS = $(OBJ)/frequency_model.o $(OBJ)/context_model.o
+# Shared statistical models
+STAT_MODELS = $(OBJ)/frequency_model.o $(OBJ)/context_model.o
 
-# v6 specific models (v5 + multi-order)
-V6_MODELS = $(V5_MODELS) $(OBJ)/multi_order_ppm.o \
-            $(OBJ)/context_mixer.o $(OBJ)/prediction_utils.o
+# v6 specific models (per-block multi-pipeline, same as old v9)
+V6_MODELS = $(STAT_MODELS)
 
-# v7 specific models (v6 + bit-level PPM)
-V7_MODELS = $(V6_MODELS) $(OBJ)/bit_ppm.o
+# v7 specific models (interleaved rANS + bit-level PPM)
+V7_MODELS = $(STAT_MODELS) $(OBJ)/multi_order_ppm.o \
+            $(OBJ)/context_mixer.o $(OBJ)/prediction_utils.o $(OBJ)/bit_ppm.o
 
 # v8 specific models (minimal - LZ77 only, no PPM)
 V8_MODELS =
 
-# v9 specific models (same as v7 - bit-level PPM with adaptive mixing)
-V9_MODELS = $(V7_MODELS)
+# v9 specific models (refined v5 production pipeline)
+V9_MODELS = $(STAT_MODELS)
 
-# v9 specific models (same model set as v5)
-V9_MODELS = $(V5_MODELS)
-
-# v10 specific models (v5 + PRNG detector)
-V10_MODELS = $(V5_MODELS) $(OBJ)/prng_model.o
+# v10 specific models (v6 pipeline + PRNG detector)
+V10_MODELS = $(STAT_MODELS) $(OBJ)/prng_model.o
 
 # ============================================
 # AUTO-DETECT AVAILABLE VERSIONS

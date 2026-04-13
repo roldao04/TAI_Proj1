@@ -1,472 +1,594 @@
-/**
- * Compressor v6.0 - Maximum Compression Multi-Order PPM
- *
- * Focus: Compression ratio above all else
- * Features:
- * - Multi-order PPM: Orders 1, 2, 4, 6, 8, 12, 16, 24, 32
- * - Context mixing with adaptive weights
- * - BWT/MTF/ZRLE preprocessing (from v5.0)
- * - Byte-level encoding with range coder
- *
- * Trade-offs:
- * - 10-100× slower than v5.0
- * - Uses 2-4 GB RAM
- * - Target: < 50% compression ratio (vs v5.0's 54.73%)
- */
-
 #include <iostream>
-#include <fstream>
-#include <vector>
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <string>
 #include <cstring>
-#include <chrono>
-
-// v5.0 components (reuse)
+#include <mutex>
+#include <thread>
+#include <utility>
+#include "arithmetic/range_coder.h"
+#include "arithmetic/rans_static.h"
+#include "model/frequency_model.h"
+#include "model/context_model.h"
 #include "utils/file_io.h"
 #include "utils/entropy_calculator.h"
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
+#include "transform/lzp.h"
 #include "transform/mtf.h"
+#include "transform/x86_filter.h"
 #include "transform/zero_rle.h"
-#include "arithmetic/range_coder.h"
 
-// v6.0 components (new)
-#include "model/multi_order_ppm.h"
-#include "model/context_mixer.h"
-#include "model/prediction_utils.h"
+/*
+ * Lossless Data Compressor
+ *
+ * Compressed file format:
+ * - Model type (1 byte): legacy tags 0/1/3/4 and extended preprocessing tags 5/6
+ * - Original file size (8 bytes, uint64_t)
+ * - Extended preprocessing header (if using MTF and/or ZRLE)
+ * - BWT header (if BWT enabled): block count + primary indices
+ * - Model data (Order-0 only: frequency table)
+ * - Range-coded data
+ */
 
-// Configuration
-struct V6Config {
-    std::vector<int> orders = {1, 2, 3, 4, 5}; // Start with 5 orders (conservative)
-    size_t hash_table_size = 8 * 1024 * 1024;  // 8M contexts (~768MB RAM)
-    size_t max_history = 8 * 1024;             // 8KB history
-    double learning_rate = 0.002;              // Mixer learning rate
-    bool use_bwt = true;                       // Enable BWT preprocessing
-    bool use_mtf = true;                       // Enable MTF transform
-    bool use_zrle = true;                      // Enable zero-run RLE
-    bool verbose = true;                       // Print statistics
+using StreamHeader::ModelType;
+
+namespace {
+
+struct ParallelCandidateResult {
+    StreamHeader::ParallelBlockMeta meta{};
+    std::vector<uint8_t> compressed_data;
+    std::string candidate_name;
 };
 
-void print_usage(const char* program_name) {
-    std::cout << "Usage: " << program_name << " <input_file> <output_file> [options]\n\n";
-    std::cout << "v6.0 Options (Maximum Compression):\n";
-    std::cout << "  --orders <list>       Comma-separated orders (default: 1,2,4,6,8,12,16,24,32)\n";
-    std::cout << "  --hash-size <M>       Hash table size in millions (default: 16)\n";
-    std::cout << "  --learning-rate <lr>  Mixer learning rate (default: 0.002)\n";
-    std::cout << "  --no-bwt              Disable BWT preprocessing\n";
-    std::cout << "  --no-mtf              Disable MTF transform\n";
-    std::cout << "  --no-zrle             Disable zero-run RLE\n";
-    std::cout << "  --quiet               Minimal output\n";
-    std::cout << "  --yes, -y             Skip prompts\n";
-    std::cout << "\nWarning: v6.0 is 10-100× slower than v5.0 but achieves better compression\n";
+bool env_flag_enabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
-/**
- * Encode data using multi-order PPM with context mixing
- * Uses static weights (pre-trained on sample) for deterministic compression
- */
-std::vector<uint8_t> encode_with_multiorder_ppm(const std::vector<uint8_t>& data,
-                                                 const V6Config& config,
-                                                 const std::vector<int64_t>& static_weights) {
-    if (data.empty()) {
-        return std::vector<uint8_t>();
+size_t choose_parallel_block_size(const std::vector<uint8_t>& input_data,
+                                  double entropy_hint,
+                                  bool is_x86_elf) {
+    size_t max_block_size = 4 * 1024 * 1024;
+
+    if (is_x86_elf) {
+        max_block_size = 512 * 1024;
+    } else if (input_data.size() >= 2 * 1024 * 1024 && entropy_hint < 6.2) {
+        max_block_size = 1024 * 1024;
+    } else if (input_data.size() >= 8 * 1024 * 1024 && entropy_hint < 6.8) {
+        max_block_size = 2 * 1024 * 1024;
     }
 
-    auto start_time = std::chrono::high_resolution_clock::now();
+    size_t num_blocks = std::max<size_t>(1,
+        (input_data.size() + max_block_size - 1) / max_block_size);
+    return (input_data.size() + num_blocks - 1) / num_blocks;
+}
 
-    // Initialize multi-order PPM
-    MultiOrderPPM ppm(config.orders, config.hash_table_size, config.max_history);
+std::mutex candidate_log_mutex;
 
-    // Initialize context mixer with static weights (pre-trained on sample)
-    ContextMixer mixer(config.orders.size(), config.learning_rate);
-    mixer.set_all_weights_fixed(static_weights);
-
-    // Initialize range coder
-    std::vector<uint8_t> encoded;
-    RangeEncoder encoder;
-
-    // Pre-allocate output buffer to prevent repeated reallocations
-    // Estimate: input_size * 10.0 for worst case (handles expansion + header overhead)
-    // Multi-order PPM can temporarily expand data significantly before converging
-    // especially on small/medium files where models haven't adapted yet
-    // NOTE: Early in compression, with uniform frequency distributions, range coder
-    // can expand data by 8-10x per byte until model adapts
-    size_t reserve_size = data.size() * 10 + 65536;  // 10x + 64KB safety margin
-    encoder.reserve_output(reserve_size);
-
-    if (config.verbose) {
-        std::cout << "Reserved " << (reserve_size / 1024) << " KB for range encoder output\n";
+void log_parallel_candidate(bool enabled,
+                            size_t block_index,
+                            const ParallelCandidateResult& result,
+                            bool is_winner) {
+    if (!enabled) {
+        return;
     }
 
-    if (config.verbose) {
-        std::cout << "\nEncoding with Multi-Order PPM + Context Mixing...\n";
-        std::cout << "Orders: ";
-        for (int order : config.orders) std::cout << order << " ";
-        std::cout << "\nData size: " << data.size() << " bytes\n";
-    }
+    std::lock_guard<std::mutex> lock(candidate_log_mutex);
+    std::cerr << (is_winner ? "WINNER" : "CANDIDATE")
+              << ",block=" << block_index
+              << ",name=" << result.candidate_name
+              << ",orig=" << result.meta.original_block_size
+              << ",pre=" << result.meta.preprocessed_block_size
+              << ",comp=" << result.meta.compressed_block_size
+              << ",flags=" << static_cast<int>(result.meta.transform_flags)
+              << ",bwt_primary=" << result.meta.bwt_primary_index
+              << '\n';
+}
 
-    // Process each byte
-    size_t progress_interval = data.size() / 100;
-    if (progress_interval == 0) progress_interval = 1;
+ParallelCandidateResult encode_parallel_candidate(const std::vector<uint8_t>& original_block,
+                                                  const std::vector<uint8_t>* prefilter_block,
+                                                  uint8_t prefilter_flags,
+                                                  bool use_bwt,
+                                                  bool use_zrle,
+                                                  bool use_order2,
+                                                  const char* candidate_name) {
+    std::vector<uint8_t> working_block = prefilter_block ? *prefilter_block : original_block;
+    uint8_t transform_flags = prefilter_flags;
+    uint32_t primary_index = 0;
 
-    for (size_t i = 0; i < data.size(); i++) {
-        uint8_t byte = data[i];
+    if (use_bwt) {
+        auto [bwt_data, bwt_primary_index] = BWT::transform(working_block);
+        primary_index = bwt_primary_index;
+        working_block = MoveToFront::transform(bwt_data);
+        StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_BWT);
+        StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_MTF);
 
-        try {
-            // Get blended frequency distribution from all PPM orders
-            // This distribution is built BEFORE knowing the byte value,
-            // so encoder and decoder will build identical distributions
-            uint32_t freqs[256];
-            try {
-                ppm.get_blended_frequencies(freqs, mixer.get_weights_fixed());
-            } catch (const std::bad_alloc& e) {
-                std::cerr << "\nError at byte " << i << " in get_blended_frequencies: " << e.what() << std::endl;
-                std::cerr << "Hash table size: " << ppm.get_hash_table_usage() << " entries" << std::endl;
-                std::cerr << "Memory usage: " << (ppm.get_memory_usage() / (1024*1024)) << " MB" << std::endl;
-                throw;
-            }
-
-            // Build cumulative frequencies for range coder
-            uint32_t cumul[257];
-            cumul[0] = 0;
-            uint32_t total_freq = 0;
-            for (int j = 0; j < 256; j++) {
-                cumul[j+1] = cumul[j] + freqs[j];
-                total_freq += freqs[j];
-            }
-
-            // SAFETY CHECK: Validate total_freq is reasonable
-            // Range coder requires: 0 < total_freq < (range / 256) to work correctly
-            // Typically total_freq should be ~10000 (OUTPUT_SCALE)
-            if (total_freq == 0) {
-                std::cerr << "\nFATAL ERROR at byte " << i << ": total_freq is 0!\n";
-                std::cerr << "This means all frequencies are 0, which should never happen.\n";
-                throw std::runtime_error("Invalid frequency distribution: total_freq = 0");
-            }
-            if (total_freq > 1000000) {  // 100x larger than expected
-                std::cerr << "\nFATAL ERROR at byte " << i << ":\n";
-                std::cerr << "  total_freq = " << total_freq << " (expected ~10000)\n";
-                std::cerr << "  This is " << (total_freq / 10000) << "x too large!\n";
-                std::cerr << "  cumul[" << (int)byte << "] = " << cumul[byte] << "\n";
-                std::cerr << "  cumul[" << ((int)byte+1) << "] = " << cumul[byte+1] << "\n";
-                std::cerr << "  freq[" << (int)byte << "] = " << freqs[byte] << "\n";
-                std::cerr << "  First 10 freqs: [";
-                for (int k = 0; k < 10; k++) {
-                    std::cerr << freqs[k];
-                    if (k < 9) std::cerr << ",";
-                }
-                std::cerr << "]\n";
-                throw std::runtime_error("Invalid frequency distribution: total_freq too large");
-            }
-
-            // Encode the actual byte using this distribution
-            encoder.encode_symbol(cumul[byte], cumul[byte+1], total_freq);
-
-            // Update models with actual byte
-            // Get predictions for mixer weight updates
-            std::vector<Prediction> predictions;
-            try {
-                predictions = ppm.predict_all(byte);
-            } catch (const std::bad_alloc& e) {
-                std::cerr << "\nError at byte " << i << " in predict_all: " << e.what() << std::endl;
-                throw;
-            }
-
-            try {
-                ppm.update_all(byte);
-            } catch (const std::bad_alloc& e) {
-                std::cerr << "\nError at byte " << i << " in update_all: " << e.what() << std::endl;
-                std::cerr << "Hash table size: " << ppm.get_hash_table_usage() << " entries" << std::endl;
-                throw;
-            }
-
-            // DO NOT update mixer weights - they are static (pre-trained on sample)
-            // This ensures deterministic encoding/decoding with zero divergence
-
-            // Progress indicator
-            if (config.verbose && i % progress_interval == 0) {
-                int percent = (int)((i * 100) / data.size());
-                std::cout << "\rProgress: " << percent << "%" << std::flush;
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "\nError at byte " << i << ": " << e.what() << std::endl;
-            throw;
+        if (use_zrle) {
+            working_block = ZeroRunLengthEncoder::encode(working_block);
+            StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_ZRLE);
         }
     }
 
-    // Finish encoding
-    encoder.finish();
-    encoded = encoder.get_output();
-
-    if (config.verbose) {
-        std::cout << "\rProgress: 100%\n";
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "Encoding time: " << duration.count() << " ms\n";
-        std::cout << "Encoded size: " << encoded.size() << " bytes\n";
-        std::cout << "Compression ratio: " << (encoded.size() * 100.0 / data.size()) << "%\n";
-
-        // Print mixer statistics (static weights)
-        std::cout << "\nStatic mixer weights (trained on sample):\n";
-        const auto& weights = mixer.get_weights();
-        for (size_t i = 0; i < weights.size(); i++) {
-            std::cout << "  Order-" << config.orders[i] << ": " << weights[i] << "\n";
-        }
-
-        // Print PPM statistics
-        std::cout << "\nPPM hash table usage: "
-                  << ppm.get_hash_table_usage() << " / "
-                  << config.hash_table_size << " contexts ("
-                  << (ppm.get_hash_table_usage() * 100.0 / config.hash_table_size) << "%)\n";
+    ContextModel ctx_model;
+    ctx_model.set_encoding_method_ppm_c();
+    if (use_order2) {
+        ctx_model.enable_order2();
+        StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_ORDER2);
     }
+    ctx_model.init_adaptive();
 
-    // Return encoded data (weights will be trained symmetrically on decoder side)
-    return encoded;
+    RangeEncoder range_enc;
+    for (uint8_t byte : working_block) {
+        auto res = ctx_model.encode_symbol_fast(byte);
+        for (int step_index = 0; step_index < res.count; step_index++) {
+            range_enc.encode_symbol(res.steps[step_index].cum_freq_low,
+                                    res.steps[step_index].cum_freq_high,
+                                    res.steps[step_index].total_freq);
+        }
+        ctx_model.update_frequencies(byte);
+        ctx_model.update_history(byte);
+    }
+    range_enc.finish();
+
+    ParallelCandidateResult result;
+    result.meta.bwt_primary_index = primary_index;
+    result.meta.transform_flags = transform_flags;
+    result.meta.original_block_size = static_cast<uint32_t>(original_block.size());
+    result.meta.preprocessed_block_size = static_cast<uint32_t>(working_block.size());
+    result.meta.compressed_block_size = static_cast<uint32_t>(range_enc.get_output().size());
+    result.compressed_data = range_enc.get_output();
+    result.candidate_name = candidate_name;
+
+    return result;
+}
+
+} // namespace
+
+void print_usage(const char* program_name) {
+    std::cout << "═══════════════════════════════════════════════════════\n";
+    std::cout << "  G07 v6.0 - Fast Lossless Compression\n";
+    std::cout << "═══════════════════════════════════════════════════════\n";
+    std::cout << "\nUsage: " << program_name << " <input_file> <output_file>\n\n";
+    std::cout << "Optimal settings (hardcoded):\n";
+    std::cout << "  • Model: Auto-select (Order-0/Order-1 based on entropy)\n";
+    std::cout << "  • BWT: Auto-enable for entropy < 6.5\n";
+    std::cout << "  • MTF + ZRLE: Auto-enable when beneficial\n";
+    std::cout << "\nExpected performance:\n";
+    std::cout << "  • Compression ratio: ~54.73% avg\n";
+    std::cout << "  • Speed: ~25 MB/s\n";
+    std::cout << "  • Beats bzip2 by 0.20pp\n";
+    std::cout << "\nNo flags needed - all settings optimized!\n";
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
+    // G07 v6.0 - Simplified interface: just input and output files
+    if (argc != 3) {
         print_usage(argv[0]);
         return 1;
     }
 
-    std::string input_file = argv[1];
-    std::string output_file = argv[2];
+    std::string input_filename = argv[1];
+    std::string output_filename = argv[2];
 
-    // Parse configuration
-    V6Config config;
-    bool skip_prompts = true;  // Default to no prompts for automation
+    // Hardcoded optimal settings (no flags)
+    ModelType model_type = ModelType::ORDER_0;  // Will be auto-selected
+    bool auto_select = true;                     // Always auto-select model
+    bool force_mode = true;                      // Skip interactive prompts
+    int bwt_preference = 0;                      // Auto-decide BWT
+    int mtf_preference = 0;                      // Auto-decide MTF
+    int zrle_preference = 0;                     // Auto-decide ZRLE
 
-    for (int i = 3; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--no-bwt") {
-            config.use_bwt = false;
-        } else if (arg == "--no-mtf") {
-            config.use_mtf = false;
-        } else if (arg == "--no-zrle") {
-            config.use_zrle = false;
-        } else if (arg == "--quiet") {
-            config.verbose = false;
-        } else if (arg == "--yes" || arg == "-y") {
-            skip_prompts = true;
-        } else if (arg == "--hash-size" && i + 1 < argc) {
-            config.hash_table_size = std::stoull(argv[++i]) * 1024 * 1024;
-        } else if (arg == "--learning-rate" && i + 1 < argc) {
-            config.learning_rate = std::stod(argv[++i]);
-        } else if (arg == "--help" || arg == "-h") {
-            print_usage(argv[0]);
-            return 0;
-        }
-    }
-
-    std::cout << "╔══════════════════════════════════════════╗\n";
-    std::cout << "║  Lossless Compression Tool v6.0         ║\n";
-    std::cout << "║  Maximum Compression Multi-Order PPM    ║\n";
-    std::cout << "║  Group 07 - Universidade de Aveiro     ║\n";
-    std::cout << "╚══════════════════════════════════════════╝\n\n";
-
-    // Read input file
-    std::cout << "Reading input file: " << input_file << "\n";
-    std::vector<uint8_t> input_data;
     try {
-        input_data = FileIO::read_file(input_file);
-    } catch (const std::exception& e) {
-        std::cerr << "Error reading input file: " << e.what() << std::endl;
-        return 1;
-    }
+        auto start_time = std::chrono::high_resolution_clock::now();
+        const bool candidate_logging_enabled = env_flag_enabled("G07_V6_CANDIDATE_LOG");
 
-    if (input_data.empty()) {
-        std::cerr << "Error: Input file is empty\n";
-        return 1;
-    }
+        std::cout << "Reading input file: " << input_filename << std::endl;
+        std::vector<uint8_t> input_data = FileIO::read_file(input_filename);
+        std::cout << "Input size: " << input_data.size() << " bytes" << std::endl;
 
-    std::cout << "Input size: " << input_data.size() << " bytes\n";
+        double detected_entropy = EntropyCalculator::calculate(input_data, 8192);
 
-    // Calculate entropy
-    double entropy = EntropyCalculator::calculate(input_data);
-    std::cout << "Entropy: " << entropy << " bits/symbol\n";
+        if (auto_select) {
+            std::cout << "Detected entropy: " << detected_entropy << " bits/symbol" << std::endl;
 
-    // BWT auto-selection DISABLED for v6 optimization testing
-    // Pure PPM works better without BWT's byte reordering
-    std::cout << "BWT preprocessing: " << (config.use_bwt ? "ENABLED" : "DISABLED") << " (manual config)\n";
-    std::cout << "MTF transform: " << (config.use_mtf ? "ENABLED" : "DISABLED") << " (manual config)\n";
-    std::cout << "ZRLE: " << (config.use_zrle ? "ENABLED" : "DISABLED") << " (manual config)\n";
-
-    // Warning about speed
-    if (!skip_prompts) {
-        std::cout << "\n⚠️  Warning: v6.0 is significantly slower than v5.0 (10-100× compression time)\n";
-        std::cout << "   Estimated time for " << (input_data.size() / 1024) << " KB: "
-                  << ((input_data.size() / 1024) * 0.1) << " - "
-                  << ((input_data.size() / 1024) * 1.0) << " seconds\n";
-        std::cout << "   Continue? (y/n): ";
-        std::string response;
-        std::getline(std::cin, response);
-        if (response != "y" && response != "Y" && response != "yes") {
-            std::cout << "Compression cancelled.\n";
-            return 0;
-        }
-    }
-
-    // Start compression
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    // Preprocessing pipeline
-    std::vector<uint8_t> processed_data = input_data;
-    uint32_t bwt_primary_index = 0;
-    bool bwt_applied = false;
-    bool mtf_applied = false;
-
-    if (config.use_bwt) {
-        std::cout << "\n[1/4] Applying BWT preprocessing...\n";
-        auto bwt_result = BWT::transform(processed_data);
-        processed_data = bwt_result.first;
-        bwt_primary_index = bwt_result.second;
-        bwt_applied = true;
-        std::cout << "  BWT applied. Primary index: " << bwt_primary_index << "\n";
-    }
-
-    if (config.use_mtf && bwt_applied) {
-        std::cout << "\n[2/4] Applying MTF transform...\n";
-        processed_data = MoveToFront::transform(processed_data);
-        mtf_applied = true;
-        std::cout << "  MTF applied. Size: " << processed_data.size() << " bytes\n";
-    }
-
-    // Auto-selection for ZRLE: only apply if it reduces size AND no rank-255 bug (from v5.0)
-    if (mtf_applied) {
-        // Check for rank-255 bug: ZRLE fails when MTF output contains byte 255
-        bool has_rank255 = std::any_of(processed_data.begin(), processed_data.end(),
-                                       [](uint8_t b){ return b == 255; });
-
-        if (has_rank255) {
-            std::cout << "\n[3/4] Zero-run RLE: SKIPPED (MTF output contains rank-255, known ZRLE bug)\n";
-            config.use_zrle = false;
-        } else {
-            std::vector<uint8_t> zrle_candidate = ZeroRunLengthEncoder::encode(processed_data);
-            if (zrle_candidate.size() < processed_data.size()) {
-                std::cout << "\n[3/4] Applying zero-run RLE...\n";
-                std::cout << "  ZRLE applied: " << processed_data.size() << " -> "
-                          << zrle_candidate.size() << " bytes (saved "
-                          << (processed_data.size() - zrle_candidate.size()) << " bytes)\n";
-                processed_data = std::move(zrle_candidate);
-                config.use_zrle = true;
+            if (detected_entropy > 7.5) {
+                model_type = ModelType::UNCOMPRESSED;
+                std::cout << "Decision: UNCOMPRESSED (entropy " << detected_entropy << " > 7.5, incompressible)" << std::endl;
+            } else if (detected_entropy > 7.2) {
+                model_type = ModelType::RANS_ORDER_0;
+                std::cout << "Decision: rANS Order-0 (high entropy " << detected_entropy << " > 7.2, Order-1 gain marginal)" << std::endl;
+            } else if (input_data.size() < 102400) {
+                model_type = ModelType::RANS_ORDER_0;
+                std::cout << "Decision: rANS Order-0 (small file < 100KB)" << std::endl;
             } else {
-                std::cout << "\n[3/4] Zero-run RLE: SKIPPED (no size reduction: "
-                          << processed_data.size() << " -> " << zrle_candidate.size() << " bytes)\n";
-                config.use_zrle = false;
+                model_type = ModelType::ORDER_1;
+                std::cout << "Decision: Order-1 (entropy " << detected_entropy << " <= 7.2, good compression expected)" << std::endl;
+            }
+        } else {
+            std::cout << "Using user-specified model" << std::endl;
+        }
+
+        if (!auto_select && model_type == ModelType::ORDER_1) {
+            if (detected_entropy > 7.2) {
+                std::cerr << "\n⚠️  WARNING: Order-1 not recommended for very high-entropy files!" << std::endl;
+                std::cerr << "    Detected entropy: " << detected_entropy << " bits/symbol (threshold: 7.2)" << std::endl;
+                std::cerr << "    Expected issues: Marginal compression gain over rANS Order-0." << std::endl;
+                std::cerr << "    Recommendation: Use --model auto (automatic selection) or --model order0" << std::endl;
+
+                if (force_mode) {
+                    std::cerr << "    --yes flag detected: Proceeding with Order-1 despite warning" << std::endl;
+                } else {
+                    std::cerr << "\nContinue with Order-1 anyway? (y/N): ";
+                    char response;
+                    std::cin >> response;
+                    if (response != 'y' && response != 'Y') {
+                        std::cout << "Aborted. Using Order-0 instead for safety." << std::endl;
+                        model_type = ModelType::ORDER_0;
+                    }
+                }
             }
         }
-    }
 
-    // ========== SAMPLE-BASED WEIGHT TRAINING ==========
-    std::cout << "\n[4a/4] Training Phase: Analyzing file to determine optimal weights...\n";
+        bool use_bwt = false;
+        bool use_mtf = false;
+        bool use_zrle = false;
+        uint8_t transform_flags = 0;
+        std::vector<uint32_t> bwt_primary_indices;
+        std::vector<uint8_t> data_to_encode = input_data;
 
-    size_t training_sample_size = std::min(processed_data.size(), (size_t)102400); // 100KB max
-    std::cout << "Training sample: " << training_sample_size << " bytes ("
-              << (training_sample_size * 100.0 / processed_data.size()) << "% of file)\n";
+        if (model_type != ModelType::UNCOMPRESSED) {
+            if (bwt_preference == 1) {
+                use_bwt = true;
+                std::cout << "BWT preprocessing: ENABLED (user requested --bwt)" << std::endl;
+            } else if (bwt_preference == -1) {
+                use_bwt = false;
+                std::cout << "BWT preprocessing: DISABLED (user requested --no-bwt)" << std::endl;
+            } else {
+                if (detected_entropy < 6.5 && input_data.size() > 10240) {
+                    use_bwt = true;
+                    std::cout << "BWT preprocessing: ENABLED (entropy " << detected_entropy << " < 6.5, structured data expected)" << std::endl;
+                } else {
+                    use_bwt = false;
+                    std::cout << "BWT preprocessing: DISABLED (entropy " << detected_entropy << " or size not suitable)" << std::endl;
+                }
+            }
 
-    // Initialize training PPM and mixer
-    MultiOrderPPM ppm_trainer(config.orders, config.hash_table_size, config.max_history);
-    ContextMixer mixer_trainer(config.orders.size(), config.learning_rate);
-
-    // Train on sample
-    for (size_t i = 0; i < training_sample_size; i++) {
-        uint8_t byte = processed_data[i];
-        std::vector<Prediction> predictions = ppm_trainer.predict_all(byte);
-        mixer_trainer.update(predictions, (byte & 0x80) != 0);
-        ppm_trainer.update_all(byte);
-    }
-
-    // Extract static weights from training
-    std::vector<int64_t> static_weights = mixer_trainer.get_weights_fixed();
-
-    std::cout << "Trained static weights:\n";
-    for (size_t i = 0; i < static_weights.size(); i++) {
-        std::cout << "  Order-" << config.orders[i] << ": "
-                  << (static_weights[i] / 65536.0) << "\n";
-    }
-    std::cout << "These weights will be used (frozen) for entire file.\n";
-
-    // Encode with multi-order PPM using static weights
-    std::cout << "\n[4b/4] Encoding with Multi-Order PPM (using static weights)...\n";
-    std::vector<uint8_t> encoded_data = encode_with_multiorder_ppm(processed_data, config, static_weights);
-
-    // Write output file with header
-    std::vector<uint8_t> output_data;
-
-    // Header: model type (0x09 = CONTEXT_MIXING_V6)
-    output_data.push_back(0x09);
-
-    // Original size (8 bytes, little-endian)
-    uint64_t original_size = input_data.size();
-    for (int i = 0; i < 8; i++) {
-        output_data.push_back((uint8_t)(original_size >> (i * 8)));
-    }
-
-    // Processed size (8 bytes, little-endian) - size after BWT/MTF/ZRLE
-    uint64_t processed_size = processed_data.size();
-    for (int i = 0; i < 8; i++) {
-        output_data.push_back((uint8_t)(processed_size >> (i * 8)));
-    }
-
-    // Config byte (store what actually ran, not what was requested)
-    uint8_t config_byte = 0;
-    if (bwt_applied) config_byte |= 0x01;
-    if (mtf_applied) config_byte |= 0x02;
-    if (config.use_zrle && mtf_applied) config_byte |= 0x04;  // ZRLE only if MTF ran
-    output_data.push_back(config_byte);
-
-    // BWT primary index (4 bytes, little-endian) - only if BWT applied
-    if (bwt_applied) {
-        for (int i = 0; i < 4; i++) {
-            output_data.push_back((uint8_t)(bwt_primary_index >> (i * 8)));
+            if (!use_bwt) {
+                if (mtf_preference == 1) {
+                    throw std::runtime_error("--mtf requires BWT preprocessing");
+                }
+                if (zrle_preference == 1) {
+                    throw std::runtime_error("--zrle requires BWT preprocessing");
+                }
+            }
         }
-    }
 
-    // Number of orders
-    output_data.push_back((uint8_t)config.orders.size());
+        uint64_t original_size = input_data.size();
 
-    // Order values
-    for (int order : config.orders) {
-        output_data.push_back((uint8_t)order);
-    }
+            use_mtf = (mtf_preference != -1);
+            if (zrle_preference == 1) {
+                if (mtf_preference == -1) {
+                    throw std::runtime_error("--zrle requires MTF preprocessing; remove --no-mtf or disable --zrle");
+                }
+                use_mtf = true;
+            }
 
-    // Static mixer weights (N × 8 bytes = 32 bytes for 4 orders)
-    // These are trained on sample and frozen for entire file (Option 6C)
-    for (int64_t weight : static_weights) {
-        for (int i = 0; i < 8; i++) {
-            output_data.push_back((uint8_t)(weight >> (i * 8)));
+            if (model_type == ModelType::ORDER_1) {
+                std::cout << "Using parallel per-block ratio search (raw/BWT/LZP/X86 + Order-1/2)..." << std::endl;
+
+                const bool is_x86_elf_executable = X86Filter::is_x86_64_elf_executable(input_data);
+                const bool allow_bwt_candidates = (bwt_preference != -1) && (mtf_preference != -1);
+                const bool allow_zrle_candidates = allow_bwt_candidates && (zrle_preference != -1);
+                const bool elf_tuned_blocks = is_x86_elf_executable;
+                const size_t BLOCK_SIZE = choose_parallel_block_size(input_data,
+                                                                     detected_entropy,
+                                                                     is_x86_elf_executable);
+                size_t num_blocks = std::max<size_t>(1,
+                    (input_data.size() + BLOCK_SIZE - 1) / BLOCK_SIZE);
+
+                if (candidate_logging_enabled) {
+                    std::cerr << "CANDIDATE_LOG"
+                              << ",mode=parallel_search"
+                              << ",entropy=" << detected_entropy
+                              << ",block_size=" << BLOCK_SIZE
+                              << ",blocks=" << num_blocks
+                              << ",elf_tuned=" << (elf_tuned_blocks ? 1 : 0)
+                              << ",x86_candidate=" << (is_x86_elf_executable ? 1 : 0)
+                              << '\n';
+                }
+
+                std::vector<StreamHeader::ParallelBlockMeta> block_metas(num_blocks);
+                std::vector<std::vector<uint8_t>> block_compressed(num_blocks);
+
+                auto compress_one_block = [&](size_t bi) {
+                    size_t blk_start = bi * BLOCK_SIZE;
+                    size_t blk_end   = std::min(blk_start + BLOCK_SIZE, input_data.size());
+                    std::vector<uint8_t> block(input_data.begin() + blk_start,
+                                               input_data.begin() + blk_end);
+                    const uint32_t block_base_offset = static_cast<uint32_t>(blk_start);
+
+                    ParallelCandidateResult best_result =
+                        encode_parallel_candidate(block, nullptr, 0,
+                                                  false, false, false, "raw-o1");
+                    log_parallel_candidate(candidate_logging_enabled, bi, best_result, false);
+
+                    auto choose_best = [&](ParallelCandidateResult candidate) {
+                        log_parallel_candidate(candidate_logging_enabled, bi, candidate, false);
+                        if (candidate.meta.compressed_block_size < best_result.meta.compressed_block_size) {
+                            best_result = std::move(candidate);
+                        }
+                    };
+
+                    if (is_x86_elf_executable) {
+                        std::vector<uint8_t> x86_block = X86Filter::encode(block, block_base_offset);
+                        choose_best(encode_parallel_candidate(block,
+                                                              &x86_block, StreamHeader::TRANSFORM_X86,
+                                                              false, false, false, "x86-o1"));
+
+                        if (allow_bwt_candidates) {
+                            choose_best(encode_parallel_candidate(block,
+                                                                  &x86_block, StreamHeader::TRANSFORM_X86,
+                                                                  true, false, false, "x86-bwt-mtf-o1"));
+
+                            if (allow_zrle_candidates) {
+                                choose_best(encode_parallel_candidate(block,
+                                                                      &x86_block, StreamHeader::TRANSFORM_X86,
+                                                                      true, true, false, "x86-bwt-mtf-zrle-o1"));
+                            }
+                        }
+                    }
+
+                    if (allow_bwt_candidates) {
+                        choose_best(encode_parallel_candidate(block, nullptr, 0,
+                                                              true, false, false, "bwt-mtf-o1"));
+                        choose_best(encode_parallel_candidate(block, nullptr, 0,
+                                                              true, false, true, "bwt-mtf-o2"));
+
+                        if (allow_zrle_candidates) {
+                            choose_best(encode_parallel_candidate(block, nullptr, 0,
+                                                                  true, true, false, "bwt-mtf-zrle-o1"));
+                        }
+
+                        std::vector<uint8_t> lzp_block = LZPredictor::encode(block);
+                        if (!lzp_block.empty()) {
+                            choose_best(encode_parallel_candidate(block,
+                                                                  &lzp_block, StreamHeader::TRANSFORM_LZP,
+                                                                  true, false, false, "lzp-bwt-mtf-o1"));
+                            choose_best(encode_parallel_candidate(block,
+                                                                  &lzp_block, StreamHeader::TRANSFORM_LZP,
+                                                                  true, false, true, "lzp-bwt-mtf-o2"));
+
+                            if (allow_zrle_candidates) {
+                                choose_best(encode_parallel_candidate(block,
+                                                                      &lzp_block, StreamHeader::TRANSFORM_LZP,
+                                                                      true, true, false, "lzp-bwt-mtf-zrle-o1"));
+                            }
+                        }
+                    }
+
+                    log_parallel_candidate(candidate_logging_enabled, bi, best_result, true);
+
+                    block_metas[bi] = best_result.meta;
+                    block_compressed[bi] = std::move(best_result.compressed_data);
+                };
+
+                std::vector<std::thread> threads;
+                threads.reserve(num_blocks);
+                for (size_t i = 0; i < num_blocks; i++) {
+                    threads.emplace_back(compress_one_block, i);
+                }
+                for (auto& t : threads) t.join();
+
+                std::vector<uint8_t> output_data;
+                StreamHeader::write_parallel_header(output_data, original_size, block_metas);
+                for (const auto& bc : block_compressed) {
+                    output_data.insert(output_data.end(), bc.begin(), bc.end());
+                }
+
+                std::cout << "Writing compressed file: " << output_filename << std::endl;
+                FileIO::write_file(output_filename, output_data);
+
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+                std::cout << "\n=== Compression Statistics ===" << std::endl;
+                std::cout << "Model: Parallel candidate search + Order-1/2 (" << num_blocks << " blocks)" << std::endl;
+                std::cout << "Original size:    " << input_data.size() << " bytes" << std::endl;
+                std::cout << "Compressed size:  " << output_data.size() << " bytes" << std::endl;
+                std::cout << "Compression ratio: " << (100.0 * output_data.size() / input_data.size()) << "%" << std::endl;
+                std::cout << "Bits per symbol:  " << (8.0 * output_data.size() / input_data.size()) << std::endl;
+                std::cout << "Compression time: " << duration.count() << " ms" << std::endl;
+
+                return 0;
+            }
+
+            if (use_bwt) {
+                // else fall through to sequential path
+
+                std::cout << "Applying BWT preprocessing..." << std::endl;
+                auto start_bwt = std::chrono::high_resolution_clock::now();
+
+                auto [bwt_output, primary_indices] = BWT::transform_blocks(input_data, 1024*1024);
+                data_to_encode = std::move(bwt_output);
+                bwt_primary_indices = primary_indices;
+                StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_BWT);
+
+                auto end_bwt = std::chrono::high_resolution_clock::now();
+                auto bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_bwt - start_bwt).count();
+                std::cout << "BWT preprocessing complete (" << bwt_time << " ms)" << std::endl;
+                std::cout << "Number of BWT blocks: " << bwt_primary_indices.size() << std::endl;
+
+                if (use_mtf) {
+                    std::cout << "Applying Move-to-Front transform..." << std::endl;
+                    auto start_mtf = std::chrono::high_resolution_clock::now();
+                    data_to_encode = MoveToFront::transform_blocks(data_to_encode, 1024*1024);
+                    auto end_mtf = std::chrono::high_resolution_clock::now();
+                    auto mtf_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_mtf - start_mtf).count();
+                    std::cout << "Move-to-Front transform complete (" << mtf_time << " ms)" << std::endl;
+                    StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_MTF);
+                }
+
+                if (use_mtf) {
+                    std::vector<uint8_t> zrle_candidate = ZeroRunLengthEncoder::encode(data_to_encode);
+                    if (zrle_preference == 1 ||
+                        (zrle_preference == 0 && zrle_candidate.size() < data_to_encode.size())) {
+                        use_zrle = true;
+                        std::cout << "Zero-run RLE: ENABLED ("
+                                  << data_to_encode.size() << " -> "
+                                  << zrle_candidate.size() << " bytes)" << std::endl;
+                        data_to_encode = std::move(zrle_candidate);
+                        StreamHeader::set_flag(transform_flags, StreamHeader::TRANSFORM_ZRLE);
+                    } else if (zrle_preference == -1) {
+                        std::cout << "Zero-run RLE: DISABLED (user requested --no-zrle)" << std::endl;
+                    } else {
+                        std::cout << "Zero-run RLE: DISABLED (no size reduction after MTF)" << std::endl;
+                    }
+                }
+            }
+
+        if (zrle_preference == 1 && !use_zrle) {
+            throw std::runtime_error("--zrle could not be enabled because BWT/MTF preprocessing was not active");
         }
-    }
 
-    // Encoded data
-    output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
+        if (use_bwt && use_mtf) {
+            if (model_type == ModelType::ORDER_0 || model_type == ModelType::RANS_ORDER_0) {
+                model_type = ModelType::ORDER_0_PREPROC;
+            } else if (model_type == ModelType::ORDER_1) {
+                model_type = ModelType::ORDER_1_PREPROC;
+            }
+        } else if (use_bwt) {
+            if (model_type == ModelType::ORDER_0 || model_type == ModelType::RANS_ORDER_0) {
+                model_type = ModelType::ORDER_0_BWT;
+            } else if (model_type == ModelType::ORDER_1) {
+                model_type = ModelType::ORDER_1_BWT;
+            }
+        }
 
-    // Write output file
-    try {
-        FileIO::write_file(output_file, output_data);
+        std::vector<uint8_t> output_data;
+        StreamHeader::write_header(output_data,
+                                   model_type,
+                                   original_size,
+                                   data_to_encode.size(),
+                                   transform_flags,
+                                   bwt_primary_indices);
+
+        if (model_type == ModelType::RANS_ORDER_0) {
+            std::cout << "Using rANS Order-0 (static, zero-division decode)..." << std::endl;
+
+            // Build raw frequency table (257 symbols: 0-255 + EOF)
+            std::array<uint32_t, RansStaticCoder::ALPHABET> raw_freq{};
+            for (uint8_t b : data_to_encode) raw_freq[b]++;
+            raw_freq[RansStaticCoder::EOF_SYMBOL] = 1;  // ensure EOF present
+
+            RansStaticCoder rans;
+            std::array<uint16_t, RansStaticCoder::ALPHABET> scaled = rans.build_encode_table(raw_freq);
+            std::vector<uint8_t> rans_stream = rans.encode(data_to_encode);
+
+            // Write scaled frequencies (257 × 2 bytes) then rANS bitstream
+            output_data.push_back(static_cast<uint8_t>(RansStaticCoder::SCALE_BITS));
+            for (int i = 0; i < RansStaticCoder::ALPHABET; i++) {
+                output_data.push_back(scaled[i] & 0xFF);
+                output_data.push_back((scaled[i] >> 8) & 0xFF);
+            }
+            output_data.insert(output_data.end(), rans_stream.begin(), rans_stream.end());
+
+        } else if (model_type == ModelType::ORDER_0 ||
+            model_type == ModelType::ORDER_0_BWT ||
+            model_type == ModelType::ORDER_0_PREPROC) {
+            std::cout << "Using Order-0 frequency model..." << std::endl;
+            std::cout << "Encoding..." << std::endl;
+
+            FrequencyModel model;
+            model.build_from_data(data_to_encode);
+
+            RangeEncoder encoder;
+            for (uint8_t byte : data_to_encode) {
+                uint32_t cum_freq_low, cum_freq_high;
+                model.get_symbol_range(byte, cum_freq_low, cum_freq_high);
+                encoder.encode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+            }
+
+            uint32_t cum_freq_low, cum_freq_high;
+            model.get_symbol_range(FrequencyModel::get_eof_symbol(), cum_freq_low, cum_freq_high);
+            encoder.encode_symbol(cum_freq_low, cum_freq_high, model.get_total_freq());
+
+            encoder.finish();
+            const std::vector<uint8_t>& encoded_data = encoder.get_output();
+
+            const auto& frequencies = model.get_frequencies();
+            for (int i = 0; i < 257; i++) {
+                uint32_t freq = frequencies[i];
+                for (int j = 0; j < 4; j++) {
+                    output_data.push_back((freq >> (j * 8)) & 0xFF);
+                }
+            }
+
+            output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
+
+        } else if (model_type == ModelType::ORDER_1 ||
+                   model_type == ModelType::ORDER_2 ||
+                   model_type == ModelType::ORDER_1_BWT ||
+                   model_type == ModelType::ORDER_1_PREPROC) {
+            std::string adaptive_model_name = (model_type == ModelType::ORDER_1 ||
+                                               model_type == ModelType::ORDER_1_BWT ||
+                                               model_type == ModelType::ORDER_1_PREPROC) ? "Order-1" : "Order-2";
+            std::cout << "Using " << adaptive_model_name << " adaptive context model..." << std::endl;
+            std::cout << "Encoding with simplified adaptive model..." << std::endl;
+
+            ContextModel model;
+            model.set_encoding_method_ppm_c();
+            if (model_type == ModelType::ORDER_2) {
+                model.enable_order2();
+            }
+            model.init_adaptive();
+
+            RangeEncoder encoder;
+
+            for (size_t idx = 0; idx < data_to_encode.size(); idx++) {
+                uint8_t byte = data_to_encode[idx];
+
+                auto res = model.encode_symbol_fast(byte);
+                for (int si = 0; si < res.count; si++) {
+                    encoder.encode_symbol(res.steps[si].cum_freq_low,
+                                          res.steps[si].cum_freq_high,
+                                          res.steps[si].total_freq);
+                }
+
+                model.update_frequencies(byte);
+                model.update_history(byte);
+            }
+
+            encoder.finish();
+            const std::vector<uint8_t>& encoded_data = encoder.get_output();
+
+            output_data.insert(output_data.end(), encoded_data.begin(), encoded_data.end());
+        } else if (model_type == ModelType::UNCOMPRESSED) {
+            std::cout << "Storing UNCOMPRESSED (detected incompressible data)" << std::endl;
+            output_data.insert(output_data.end(), input_data.begin(), input_data.end());
+        }
+
+        std::cout << "Writing compressed file: " << output_filename << std::endl;
+        FileIO::write_file(output_filename, output_data);
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+        // Statistics
+        std::cout << "\n=== Compression Statistics ===" << std::endl;
+        StreamHeader::Header header_summary{model_type, original_size, data_to_encode.size(), transform_flags, bwt_primary_indices, 0};
+        std::cout << "Model: " << StreamHeader::describe_model_type(header_summary) << std::endl;
+        std::cout << "Original size:    " << input_data.size() << " bytes" << std::endl;
+        std::cout << "Compressed size:  " << output_data.size() << " bytes" << std::endl;
+        std::cout << "Compression ratio: " << (100.0 * output_data.size() / input_data.size()) << "%" << std::endl;
+        std::cout << "Bits per symbol:  " << (8.0 * output_data.size() / input_data.size()) << std::endl;
+        std::cout << "Compression time: " << duration.count() << " ms" << std::endl;
+
     } catch (const std::exception& e) {
-        std::cerr << "Error writing output file: " << e.what() << std::endl;
+        std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-    // Print results
-    std::cout << "\n╔══════════════════════════════════════════╗\n";
-    std::cout << "║          Compression Complete!          ║\n";
-    std::cout << "╚══════════════════════════════════════════╝\n\n";
-    std::cout << "Input file:      " << input_file << "\n";
-    std::cout << "Output file:     " << output_file << "\n";
-    std::cout << "Original size:   " << input_data.size() << " bytes\n";
-    std::cout << "Compressed size: " << output_data.size() << " bytes\n";
-    std::cout << "Compression ratio: " << (output_data.size() * 100.0 / input_data.size()) << "%\n";
-    std::cout << "Space saved:     " << (input_data.size() - output_data.size()) << " bytes ("
-              << (100.0 - output_data.size() * 100.0 / input_data.size()) << "%)\n";
-    std::cout << "Compression time: " << duration.count() << " ms\n";
-    std::cout << "Throughput:      " << (input_data.size() / 1024.0 / (duration.count() / 1000.0))
-              << " KB/s\n";
 
     return 0;
 }

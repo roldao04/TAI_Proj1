@@ -1,379 +1,469 @@
-/**
- * Decompressor v6.0 - Multi-Order PPM Decompressor
- *
- * Decompresses files created by compressor_v6
- * Maintains backward compatibility with v1-v5 formats
- */
-
 #include <iostream>
-#include <fstream>
-#include <vector>
-#include <string>
-#include <cstring>
 #include <chrono>
-
-// v5.0 components
+#include <array>
+#include <thread>
+#include "arithmetic/range_coder.h"
+#include "arithmetic/rans_static.h"
+#include "model/frequency_model.h"
+#include "model/context_model.h"
 #include "utils/file_io.h"
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
+#include "transform/lzp.h"
 #include "transform/mtf.h"
+#include "transform/x86_filter.h"
 #include "transform/zero_rle.h"
-#include "arithmetic/range_coder.h"
 
-// v6.0 components
-#include "model/multi_order_ppm.h"
-#include "model/context_mixer.h"
-#include "model/prediction_utils.h"
+/*
+ * Lossless Data Decompressor
+ *
+ * Supports both legacy streams and the extended preprocessing format
+ * used for BWT + MTF + optional zero-run RLE.
+ */
 
-struct V6Header {
-    uint8_t model_type;          // 0x09 for v6.0
-    uint64_t original_size;      // Original file size
-    uint64_t processed_size;     // Size after BWT/MTF/ZRLE preprocessing
-    uint8_t config_byte;         // BWT/MTF/ZRLE flags
-    uint32_t bwt_primary_index;  // BWT primary index (if BWT enabled)
-    uint8_t num_orders;          // Number of PPM orders
-    std::vector<int> orders;     // Order values
-    std::vector<int64_t> mixer_weights;  // Static weights trained on sample (Option 6C)
-    bool use_bwt;
-    bool use_mtf;
-    bool use_zrle;
-};
-
-V6Header parse_v6_header(const std::vector<uint8_t>& data, size_t& offset) {
-    V6Header header;
-
-    if (data.size() < 12) {
-        throw std::runtime_error("File too small to contain valid header");
-    }
-
-    // Model type
-    header.model_type = data[offset++];
-
-    if (header.model_type != 0x09) {
-        throw std::runtime_error("Not a v6.0 compressed file (model type: 0x" +
-                                std::to_string((int)header.model_type) + ")");
-    }
-
-    // Original size (8 bytes, little-endian)
-    header.original_size = 0;
-    for (int i = 0; i < 8; i++) {
-        header.original_size |= ((uint64_t)data[offset++]) << (i * 8);
-    }
-
-    // Processed size (8 bytes, little-endian)
-    header.processed_size = 0;
-    for (int i = 0; i < 8; i++) {
-        header.processed_size |= ((uint64_t)data[offset++]) << (i * 8);
-    }
-
-    // Config byte
-    header.config_byte = data[offset++];
-    header.use_bwt = (header.config_byte & 0x01) != 0;
-    header.use_mtf = (header.config_byte & 0x02) != 0;
-    header.use_zrle = (header.config_byte & 0x04) != 0;
-
-    // BWT primary index (4 bytes, little-endian) - only if BWT enabled
-    header.bwt_primary_index = 0;
-    if (header.use_bwt) {
-        for (int i = 0; i < 4; i++) {
-            header.bwt_primary_index |= ((uint32_t)data[offset++]) << (i * 8);
-        }
-    }
-
-    // Number of orders
-    header.num_orders = data[offset++];
-
-    // Order values
-    header.orders.reserve(header.num_orders);
-    for (int i = 0; i < header.num_orders; i++) {
-        header.orders.push_back(data[offset++]);
-    }
-
-    // Static mixer weights (N × 8 bytes)
-    // These were trained on sample during compression (Option 6C)
-    header.mixer_weights.reserve(header.num_orders);
-    for (int i = 0; i < header.num_orders; i++) {
-        int64_t weight = 0;
-        for (int j = 0; j < 8; j++) {
-            if (offset >= data.size()) {
-                throw std::runtime_error("Unexpected end of file while reading mixer weights");
-            }
-            weight |= ((int64_t)data[offset++]) << (j * 8);
-        }
-        header.mixer_weights.push_back(weight);
-    }
-
-    return header;
-}
-
-std::vector<uint8_t> decode_with_multiorder_ppm(const std::vector<uint8_t>& encoded,
-                                                 size_t offset,
-                                                 const V6Header& header,
-                                                 bool verbose) {
-    if (header.processed_size == 0) {
-        return std::vector<uint8_t>();
-    }
-
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    // Initialize multi-order PPM with same configuration
-    MultiOrderPPM ppm(header.orders, 8 * 1024 * 1024, 8 * 1024);  // 8M contexts (matches compressor)
-
-    // Initialize context mixer with static weights from file header (Option 6C)
-    ContextMixer mixer(header.orders.size(), 0.002);
-
-    // Load static weights (trained on sample during compression)
-    if (header.mixer_weights.size() != header.orders.size()) {
-        throw std::runtime_error("Mixer weights count mismatch: got " +
-                                std::to_string(header.mixer_weights.size()) +
-                                ", expected " + std::to_string(header.orders.size()));
-    }
-    mixer.set_all_weights_fixed(header.mixer_weights);
-
-    if (verbose) {
-        std::cout << "Loaded static weights (sample-trained during compression):\n";
-        for (size_t i = 0; i < header.mixer_weights.size(); i++) {
-            std::cout << "  Order-" << header.orders[i] << ": "
-                      << (header.mixer_weights[i] / 65536.0) << "\n";
-        }
-    }
-
-    // Initialize range decoder
-    std::vector<uint8_t> encoded_data(encoded.begin() + offset, encoded.end());
-    RangeDecoder decoder(encoded_data);
-
-    std::vector<uint8_t> decoded;
-    decoded.reserve(header.processed_size);
-
-    if (verbose) {
-        std::cout << "\nDecoding with Multi-Order PPM + Context Mixing...\n";
-        std::cout << "Orders: ";
-        for (int order : header.orders) std::cout << order << " ";
-        std::cout << "\nTarget size: " << header.processed_size << " bytes (after preprocessing)\n";
-    }
-
-    // Decode each byte
-    size_t progress_interval = header.processed_size / 100;
-    if (progress_interval == 0) progress_interval = 1;
-
-    for (size_t i = 0; i < header.processed_size; i++) {
-        // Get blended frequency distribution from all PPM orders
-        // CRITICAL: This must be IDENTICAL to what encoder used
-        // Built from context only, not knowing the byte yet
-        uint32_t freqs[256];
-        ppm.get_blended_frequencies(freqs, mixer.get_weights_fixed());
-
-        // Build cumulative frequencies for range decoder
-        uint32_t cumul[257];
-        cumul[0] = 0;
-        uint32_t total_freq = 0;
-        for (int j = 0; j < 256; j++) {
-            cumul[j+1] = cumul[j] + freqs[j];
-            total_freq += freqs[j];
-        }
-
-        // Decode the actual byte from the bitstream
-        uint32_t value = decoder.get_current_count(total_freq);
-
-        // Find which symbol this value corresponds to
-        uint8_t decoded_byte = 0;
-        for (int j = 0; j < 256; j++) {
-            if (value >= cumul[j] && value < cumul[j+1]) {
-                decoded_byte = (uint8_t)j;
-                break;
-            }
-        }
-
-        // Update decoder state
-        decoder.decode_symbol(cumul[decoded_byte], cumul[decoded_byte+1], total_freq);
-
-        decoded.push_back(decoded_byte);
-
-        // Update models with decoded byte
-        ppm.update_all(decoded_byte);
-
-        // DO NOT update mixer weights - they are static (loaded from file header)
-        // This ensures deterministic decoding with zero divergence
-
-        // Progress indicator
-        if (verbose && i % progress_interval == 0) {
-            int percent = (int)((i * 100) / header.processed_size);
-            std::cout << "\rProgress: " << percent << "%" << std::flush;
-        }
-    }
-
-    if (verbose) {
-        std::cout << "\rProgress: 100%\n";
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "Decoding time: " << duration.count() << " ms\n";
-        std::cout << "Decoded " << decoded.size() << " bytes (processed data)\n";
-    }
-
-    // CRITICAL VALIDATION: PPM must decode exactly processed_size bytes
-    if (decoded.size() != header.processed_size) {
-        throw std::runtime_error(
-            "PPM decode size mismatch: got " + std::to_string(decoded.size()) +
-            " bytes, expected " + std::to_string(header.processed_size) + " bytes"
-        );
-    }
-
-    return decoded;
-}
+using StreamHeader::ModelType;
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << " <compressed_file> <output_file> [--quiet]\n\n";
-        std::cout << "Decompresses files created by compress_v6\n";
-        std::cout << "Also supports v1-v5 formats (backward compatibility)\n";
+    if (argc != 3) {
+        std::cout << "═══════════════════════════════════════════════════════\n";
+        std::cout << "  G07 v6.0 - Fast Lossless Decompression\n";
+        std::cout << "═══════════════════════════════════════════════════════\n";
+        std::cout << "\nUsage: " << argv[0] << " <compressed_file> <output_file>\n\n";
+        std::cout << "Handles v6 formats only (model types 0x00-0x08, 0xFF)\n";
+        std::cout << "  • Order-0, Order-1, rANS Order-0\n";
+        std::cout << "  • BWT + MTF + ZRLE variations\n";
+        std::cout << "  • Uncompressed (0xFF)\n";
+        std::cout << "\nFor v7 files: use g07-v7-d\n";
+        std::cout << "For v8 files: use g07-v8-d\n";
         return 1;
     }
 
-    std::string input_file = argv[1];
-    std::string output_file = argv[2];
-    bool verbose = true;
+    std::string input_filename = argv[1];
+    std::string output_filename = argv[2];
 
-    for (int i = 3; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--quiet") {
-            verbose = false;
-        }
-    }
-
-    if (verbose) {
-        std::cout << "╔══════════════════════════════════════════╗\n";
-        std::cout << "║  Lossless Decompression Tool v6.0       ║\n";
-        std::cout << "║  Multi-Order PPM Decompressor           ║\n";
-        std::cout << "║  Group 07 - Universidade de Aveiro     ║\n";
-        std::cout << "╚══════════════════════════════════════════╝\n\n";
-    }
-
-    // Read compressed file
-    std::cout << "Reading compressed file: " << input_file << "\n";
-    std::vector<uint8_t> compressed_data;
     try {
-        compressed_data = FileIO::read_file(input_file);
+        auto start_time = std::chrono::high_resolution_clock::now();
+
+        std::cout << "Reading compressed file: " << input_filename << std::endl;
+        std::vector<uint8_t> compressed_data = FileIO::read_file(input_filename);
+        std::cout << "Compressed size: " << compressed_data.size() << " bytes" << std::endl;
+
+        // Check if this is a v5 format (v7 is 0x09, v8 is 0x0A)
+        if (!compressed_data.empty()) {
+            uint8_t model_type_byte = compressed_data[0];
+            if (model_type_byte == 0x09) {
+                std::cerr << "\n❌ Error: This is a v7.0 compressed file (model type: 0x09)\n";
+                std::cerr << "   Use g07-v7-d to decompress this file.\n";
+                return 1;
+            }
+            if (model_type_byte == 0x0A) {
+                std::cerr << "\n❌ Error: This is a v8.0 compressed file (model type: 0x0A)\n";
+                std::cerr << "   Use g07-v8-d to decompress this file.\n";
+                return 1;
+            }
+            if (model_type_byte > 0x0A && model_type_byte != 0xFF) {
+                std::cerr << "\n❌ Error: Unknown format (model type: 0x"
+                          << std::hex << (int)model_type_byte << std::dec << ")\n";
+                std::cerr << "   This file may be from a newer version.\n";
+                return 1;
+            }
+        }
+
+        // Handle rANS Order-0 format
+        if (!compressed_data.empty() &&
+            static_cast<ModelType>(compressed_data[0]) == ModelType::RANS_ORDER_0) {
+
+            if (compressed_data.size() < 1 + 8 + 1 + RansStaticCoder::ALPHABET * 2) {
+                throw std::runtime_error("Invalid rANS compressed file: too small");
+            }
+
+            size_t off = 1;
+            // Read original_size (8 bytes)
+            uint64_t original_size = 0;
+            for (int i = 0; i < 8; i++)
+                original_size |= static_cast<uint64_t>(compressed_data[off++]) << (i * 8);
+
+            std::cout << "Model type: rANS Order-0 (static)" << std::endl;
+            std::cout << "Original size: " << original_size << " bytes" << std::endl;
+
+            // Read scale_bits (1 byte)
+            uint8_t scale_bits = compressed_data[off++];
+            if (scale_bits != RansStaticCoder::SCALE_BITS) {
+                throw std::runtime_error("rANS: unsupported scale_bits value");
+            }
+
+            // Read scaled frequencies (257 × 2 bytes, little-endian)
+            std::array<uint16_t, RansStaticCoder::ALPHABET> scaled_freq{};
+            for (int i = 0; i < RansStaticCoder::ALPHABET; i++) {
+                scaled_freq[i] = static_cast<uint16_t>(compressed_data[off]) |
+                                 (static_cast<uint16_t>(compressed_data[off + 1]) << 8);
+                off += 2;
+            }
+
+            // Build decode table and decode
+            RansStaticCoder rans;
+            rans.build_decode_table(scaled_freq);
+
+            std::vector<uint8_t> rans_stream(
+                compressed_data.begin() + off, compressed_data.end());
+
+            std::vector<uint8_t> output_data = rans.decode(rans_stream, original_size);
+
+            if (output_data.size() != original_size) {
+                std::cerr << "Warning: Decoded size (" << output_data.size()
+                          << ") doesn't match expected size (" << original_size << ")" << std::endl;
+            }
+
+            std::cout << "Writing decompressed file: " << output_filename << std::endl;
+            FileIO::write_file(output_filename, output_data);
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+            std::cout << "\n=== Decompression Statistics ===" << std::endl;
+            std::cout << "Compressed size:    " << compressed_data.size() << " bytes" << std::endl;
+            std::cout << "Decompressed size:  " << output_data.size() << " bytes" << std::endl;
+            std::cout << "Decompression time: " << duration.count() << " ms" << std::endl;
+
+            return 0;
+        }
+
+        // Handle parallel format before the standard single-stream header parser
+        if (!compressed_data.empty() &&
+            static_cast<ModelType>(compressed_data[0]) == ModelType::PARALLEL) {
+
+            StreamHeader::ParallelHeader ph = StreamHeader::parse_parallel_header(compressed_data);
+            size_t num_blocks = ph.blocks.size();
+            std::cout << "Model type: Parallel BWT-family + Order-1/2 (" << num_blocks << " blocks)" << std::endl;
+            std::cout << "Original size: " << ph.original_size << " bytes" << std::endl;
+
+            std::vector<std::vector<uint8_t>> block_outputs(num_blocks);
+
+            auto decompress_one_block = [&](size_t bi) {
+                const StreamHeader::ParallelBlockMeta& meta = ph.blocks[bi];
+                uint32_t block_base_offset = 0;
+                for (size_t j = 0; j < bi; j++) {
+                    block_base_offset += ph.blocks[j].original_block_size;
+                }
+
+                size_t blk_offset = ph.data_section_offset;
+                for (size_t j = 0; j < bi; j++) {
+                    blk_offset += ph.blocks[j].compressed_block_size;
+                }
+
+                std::vector<uint8_t> encoded(
+                    compressed_data.begin() + blk_offset,
+                    compressed_data.begin() + blk_offset + meta.compressed_block_size);
+
+                ContextModel ctx_model;
+                ctx_model.set_encoding_method_simple();
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_ORDER2))
+                    ctx_model.enable_order2();
+                ctx_model.init_adaptive();
+                RangeDecoder decoder(encoded);
+
+                std::vector<uint8_t> decoded(meta.preprocessed_block_size);
+
+                for (size_t si = 0; si < meta.preprocessed_block_size; ++si) {
+                    uint32_t lo, hi, total;
+                    int sym;
+
+                    if (ctx_model.has_order2_context()) {
+                        uint32_t cum = decoder.get_current_count(ctx_model.get_order2_total());
+                        sym = ctx_model.find_symbol_and_get_range_o2(cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during O2 decompression");
+                        decoder.decode_symbol(lo, hi, total);
+                        if (sym == 256) {
+                            if (ctx_model.has_order1_context()) {
+                                const uint32_t* o2_freq = ctx_model.get_order2_freq_ptr();
+                                uint32_t o1_total = ctx_model.get_order1_total_excl_ctx(o2_freq);
+                                cum = decoder.get_current_count(o1_total);
+                                sym = ctx_model.find_symbol_and_get_range_order1_excl_ctx(cum, o2_freq, o1_total, lo, hi, total);
+                                if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                decoder.decode_symbol(lo, hi, total);
+                                if (sym == 256) {
+                                    const uint32_t* ctx_freq = ctx_model.get_order1_freq_ptr();
+                                    uint32_t excl_total = ctx_model.get_order0_total_excl_ctx(ctx_freq);
+                                    cum = decoder.get_current_count(excl_total);
+                                    sym = ctx_model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
+                                    if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                    decoder.decode_symbol(lo, hi, total);
+                                }
+                            } else {
+                                cum = decoder.get_current_count(ctx_model.get_order0_total());
+                                sym = ctx_model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                                if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                decoder.decode_symbol(lo, hi, total);
+                            }
+                        }
+                    } else if (ctx_model.has_order1_context()) {
+                        uint32_t cum = decoder.get_current_count(ctx_model.get_order1_total());
+                        sym = ctx_model.find_symbol_and_get_range(1, cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                        decoder.decode_symbol(lo, hi, total);
+                        if (sym == 256) {
+                            // Escape: fall back to order-0 with Method C exclusions
+                            const uint32_t* ctx_freq = ctx_model.get_order1_freq_ptr();
+                            uint32_t excl_total = ctx_model.get_order0_total_excl_ctx(ctx_freq);
+                            cum = decoder.get_current_count(excl_total);
+                            sym = ctx_model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
+                            if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                            decoder.decode_symbol(lo, hi, total);
+                        }
+                    } else {
+                        uint32_t cum = decoder.get_current_count(ctx_model.get_order0_total());
+                        sym = ctx_model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                        decoder.decode_symbol(lo, hi, total);
+                    }
+
+                    uint8_t b = static_cast<uint8_t>(sym);
+                    decoded[si] = b;
+                    ctx_model.update_frequencies(b);
+                    ctx_model.update_history(b);
+                }
+
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_ZRLE)) {
+                    decoded = ZeroRunLengthEncoder::decode(decoded);
+                }
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_MTF)) {
+                    decoded = MoveToFront::inverse_transform(decoded);
+                }
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_BWT)) {
+                    decoded = BWT::inverse_transform(decoded, meta.bwt_primary_index);
+                }
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_X86)) {
+                    decoded = X86Filter::decode(decoded, block_base_offset);
+                }
+                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_LZP)) {
+                    decoded = LZPredictor::decode(decoded, meta.original_block_size);
+                }
+
+                block_outputs[bi] = std::move(decoded);
+            };
+
+            std::vector<std::thread> threads;
+            threads.reserve(num_blocks);
+            for (size_t i = 0; i < num_blocks; i++) {
+                threads.emplace_back(decompress_one_block, i);
+            }
+            for (auto& t : threads) t.join();
+
+            std::vector<uint8_t> output_data;
+            output_data.reserve(ph.original_size);
+            for (const auto& bo : block_outputs) {
+                output_data.insert(output_data.end(), bo.begin(), bo.end());
+            }
+
+            if (output_data.size() != ph.original_size) {
+                std::cerr << "Warning: Decoded size (" << output_data.size()
+                          << ") doesn't match expected size (" << ph.original_size << ")" << std::endl;
+            }
+
+            std::cout << "Writing decompressed file: " << output_filename << std::endl;
+            FileIO::write_file(output_filename, output_data);
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+            std::cout << "\n=== Decompression Statistics ===" << std::endl;
+            std::cout << "Compressed size:    " << compressed_data.size() << " bytes" << std::endl;
+            std::cout << "Decompressed size:  " << output_data.size() << " bytes" << std::endl;
+            std::cout << "Decompression time: " << duration.count() << " ms" << std::endl;
+
+            return 0;
+        }
+
+        StreamHeader::Header header = StreamHeader::parse_header(compressed_data);
+        ModelType model_type = header.model_type;
+        std::string model_name = StreamHeader::describe_model_type(header);
+        std::cout << "Model type: " << model_name << std::endl;
+        std::cout << "Original size: " << header.original_size << " bytes" << std::endl;
+        if (header.uses_bwt()) {
+            std::cout << "BWT block count: " << header.bwt_primary_indices.size() << std::endl;
+        }
+        if (model_type == ModelType::ORDER_0_PREPROC || model_type == ModelType::ORDER_1_PREPROC) {
+            std::cout << "Preprocessed size: " << header.preprocessed_size << " bytes" << std::endl;
+        }
+
+        std::vector<uint8_t> output_data;
+        output_data.reserve(header.preprocessed_size);
+
+        if (header.is_order0()) {
+            if (compressed_data.size() < header.payload_offset + 257 * 4) {
+                throw std::runtime_error("Invalid Order-0 compressed file: header too small");
+            }
+
+            std::array<uint32_t, 257> frequencies;
+            size_t offset = header.payload_offset;
+            for (int i = 0; i < 257; i++) {
+                uint32_t freq = 0;
+                for (int j = 0; j < 4; j++) {
+                    freq |= (uint32_t)compressed_data[offset++] << (j * 8);
+                }
+                frequencies[i] = freq;
+            }
+
+            FrequencyModel model;
+            model.set_frequencies(frequencies);
+
+            std::vector<uint8_t> encoded_data(compressed_data.begin() + offset, compressed_data.end());
+
+            std::cout << "Decoding with Order-0 model..." << std::endl;
+            RangeDecoder decoder(encoded_data);
+
+            const uint32_t total_freq = model.get_total_freq();
+            while (output_data.size() < header.preprocessed_size) {
+                uint32_t cum_freq = decoder.get_current_count(total_freq);
+                int symbol = model.find_symbol(cum_freq);
+
+                if (symbol == FrequencyModel::get_eof_symbol()) {
+                    break;
+                }
+
+                output_data.push_back(static_cast<uint8_t>(symbol));
+
+                uint32_t cum_freq_low, cum_freq_high;
+                model.get_symbol_range(symbol, cum_freq_low, cum_freq_high);
+                decoder.decode_symbol(cum_freq_low, cum_freq_high, total_freq);
+            }
+
+        } else if (header.is_order1()) {
+            std::string model_name_simple = "Order-1 (Simple)";
+            if (model_type == ModelType::ORDER_2) model_name_simple = "Order-2";
+            std::cout << "Decoding with adaptive " << model_name_simple << " context model..." << std::endl;
+
+            ContextModel model;
+            model.set_encoding_method_simple();
+            if (model_type == ModelType::ORDER_2) {
+                model.enable_order2();
+            }
+            model.init_adaptive();
+
+            std::vector<uint8_t> encoded_data(compressed_data.begin() + header.payload_offset, compressed_data.end());
+            RangeDecoder decoder(encoded_data);
+
+            output_data.resize(header.preprocessed_size);
+
+            for (size_t si = 0; si < header.preprocessed_size; ++si) {
+                uint32_t lo, hi, total;
+                int sym;
+
+                if (model.has_order2_context()) {
+                    uint32_t cum = decoder.get_current_count(model.get_order2_total());
+                    sym = model.find_symbol_and_get_range_o2(cum, lo, hi, total);
+                    if (sym < 0) throw std::runtime_error("Symbol not found during O2 decompression");
+                    decoder.decode_symbol(lo, hi, total);
+                    if (sym == 256) {
+                        if (model.has_order1_context()) {
+                            const uint32_t* o2_freq = model.get_order2_freq_ptr();
+                            uint32_t o1_total = model.get_order1_total_excl_ctx(o2_freq);
+                            cum = decoder.get_current_count(o1_total);
+                            sym = model.find_symbol_and_get_range_order1_excl_ctx(cum, o2_freq, o1_total, lo, hi, total);
+                            if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                            decoder.decode_symbol(lo, hi, total);
+                            if (sym == 256) {
+                                const uint32_t* ctx_freq = model.get_order1_freq_ptr();
+                                uint32_t excl_total = model.get_order0_total_excl_ctx(ctx_freq);
+                                cum = decoder.get_current_count(excl_total);
+                                sym = model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
+                                if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                                decoder.decode_symbol(lo, hi, total);
+                            }
+                        } else {
+                            cum = decoder.get_current_count(model.get_order0_total());
+                            sym = model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                            if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                            decoder.decode_symbol(lo, hi, total);
+                        }
+                    }
+                } else if (model.has_order1_context()) {
+                    uint32_t cum = decoder.get_current_count(model.get_order1_total());
+                    sym = model.find_symbol_and_get_range(1, cum, lo, hi, total);
+                    if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                    decoder.decode_symbol(lo, hi, total);
+                    if (sym == 256) {
+                        const uint32_t* ctx_freq = model.get_order1_freq_ptr();
+                        uint32_t excl_total = model.get_order0_total_excl_ctx(ctx_freq);
+                        cum = decoder.get_current_count(excl_total);
+                        sym = model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
+                        if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                        decoder.decode_symbol(lo, hi, total);
+                    }
+                } else {
+                    uint32_t cum = decoder.get_current_count(model.get_order0_total());
+                    sym = model.find_symbol_and_get_range(0, cum, lo, hi, total);
+                    if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
+                    decoder.decode_symbol(lo, hi, total);
+                }
+
+                uint8_t b = static_cast<uint8_t>(sym);
+                output_data[si] = b;
+                model.update_frequencies(b);
+                model.update_history(b);
+            }
+        } else if (model_type == ModelType::UNCOMPRESSED) {
+            std::cout << "Copying uncompressed data..." << std::endl;
+            output_data.insert(output_data.end(),
+                             compressed_data.begin() + header.payload_offset,
+                             compressed_data.end());
+        }
+
+        if (header.uses_zrle()) {
+            std::cout << "Reversing zero-run RLE..." << std::endl;
+            output_data = ZeroRunLengthEncoder::decode(output_data);
+        }
+
+        if (header.uses_mtf()) {
+            if (output_data.size() != header.original_size) {
+                throw std::runtime_error("Invalid preprocessed stream size before inverse MTF");
+            }
+
+            std::cout << "Reversing Move-to-Front transform..." << std::endl;
+            output_data = MoveToFront::inverse_transform_blocks(output_data, 1024*1024);
+        }
+
+        if (header.uses_bwt()) {
+            std::cout << "Applying inverse BWT..." << std::endl;
+            auto start_inv_bwt = std::chrono::high_resolution_clock::now();
+
+            output_data = BWT::inverse_transform_blocks(output_data, header.bwt_primary_indices, 1024*1024);
+
+            auto end_inv_bwt = std::chrono::high_resolution_clock::now();
+            auto inv_bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_inv_bwt - start_inv_bwt).count();
+            std::cout << "Inverse BWT complete (" << inv_bwt_time << " ms)" << std::endl;
+        }
+
+        if (StreamHeader::has_flag(header.transform_flags, StreamHeader::TRANSFORM_X86)) {
+            std::cout << "Reversing x86 filter..." << std::endl;
+            output_data = X86Filter::decode(output_data);
+        }
+
+        if (StreamHeader::has_flag(header.transform_flags, StreamHeader::TRANSFORM_LZP)) {
+            std::cout << "Reversing LZP preprocessing..." << std::endl;
+            output_data = LZPredictor::decode(output_data, header.original_size);
+        }
+
+        if (output_data.size() != header.original_size) {
+            std::cerr << "Warning: Decoded size (" << output_data.size()
+                      << ") doesn't match expected size (" << header.original_size << ")" << std::endl;
+        }
+
+        std::cout << "Writing decompressed file: " << output_filename << std::endl;
+        FileIO::write_file(output_filename, output_data);
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+        // Statistics
+        std::cout << "\n=== Decompression Statistics ===" << std::endl;
+        std::cout << "Compressed size:    " << compressed_data.size() << " bytes" << std::endl;
+        std::cout << "Decompressed size:  " << output_data.size() << " bytes" << std::endl;
+        std::cout << "Decompression time: " << duration.count() << " ms" << std::endl;
+
     } catch (const std::exception& e) {
-        std::cerr << "Error reading compressed file: " << e.what() << std::endl;
+        std::cerr << "Error: " << e.what() << std::endl;
         return 1;
-    }
-
-    if (compressed_data.empty()) {
-        std::cerr << "Error: Compressed file is empty\n";
-        return 1;
-    }
-
-    std::cout << "Compressed size: " << compressed_data.size() << " bytes\n";
-
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    // Parse header
-    size_t offset = 0;
-    V6Header header;
-    try {
-        header = parse_v6_header(compressed_data, offset);
-    } catch (const std::exception& e) {
-        std::cerr << "Error parsing header: " << e.what() << std::endl;
-        std::cerr << "\nNote: If this is a v1-v5 compressed file, use the regular decompress tool\n";
-        return 1;
-    }
-
-    if (verbose) {
-        std::cout << "Original size: " << header.original_size << " bytes\n";
-        std::cout << "Configuration:\n";
-        std::cout << "  BWT: " << (header.use_bwt ? "enabled" : "disabled");
-        if (header.use_bwt) {
-            std::cout << " (primary index: " << header.bwt_primary_index << ")";
-        }
-        std::cout << "\n";
-        std::cout << "  MTF: " << (header.use_mtf ? "enabled" : "disabled") << "\n";
-        std::cout << "  ZRLE: " << (header.use_zrle ? "enabled" : "disabled") << "\n";
-        std::cout << "  Orders: ";
-        for (int order : header.orders) std::cout << order << " ";
-        std::cout << "\n";
-    }
-
-    // Decode
-    std::vector<uint8_t> decoded_data = decode_with_multiorder_ppm(compressed_data, offset, header, verbose);
-
-    if (verbose) {
-        std::cout << "\nDecoded " << decoded_data.size() << " bytes (processed data)\n";
-    }
-
-    // Reverse preprocessing (reverse order of compression)
-    if (header.use_zrle && header.use_mtf) {
-        std::cout << "\nReversing zero-run RLE...\n";
-        std::cout << "  Input to ZRLE decode: " << decoded_data.size() << " bytes\n";
-
-        size_t before_zrle = decoded_data.size();
-        decoded_data = ZeroRunLengthEncoder::decode(decoded_data);
-
-        std::cout << "  ZRLE output: " << decoded_data.size() << " bytes\n";
-        std::cout << "  ZRLE reversed: " << before_zrle << " → " << decoded_data.size() << " bytes\n";
-
-        // CRITICAL VALIDATION: After ZRLE decode, size must equal original
-        // (since MTF and BWT don't change data size, only reorder/transform)
-        if (decoded_data.size() != header.original_size) {
-            throw std::runtime_error(
-                "ZRLE decode size mismatch: got " + std::to_string(decoded_data.size()) +
-                " bytes, expected " + std::to_string(header.original_size) + " bytes " +
-                "(BWT+MTF output size). This means PPM or ZRLE decode corrupted data."
-            );
-        }
-    }
-
-    if (header.use_mtf && header.use_bwt) {
-        std::cout << "\nReversing MTF transform...\n";
-        size_t before_mtf = decoded_data.size();
-        decoded_data = MoveToFront::inverse_transform(decoded_data);
-        std::cout << "  MTF reversed: " << before_mtf << " → " << decoded_data.size() << " bytes\n";
-
-        // MTF should not change size
-        if (decoded_data.size() != before_mtf) {
-            throw std::runtime_error("MTF inverse changed data size - this should never happen!");
-        }
-    }
-
-    if (header.use_bwt) {
-        std::cout << "\nReversing BWT transform...\n";
-        std::cout << "  Input size: " << decoded_data.size() << " bytes\n";
-        std::cout << "  Primary index: " << header.bwt_primary_index << "\n";
-        std::cout << "  Expected size: " << header.original_size << " bytes\n";
-
-        // Debug: check first few bytes
-        std::cout << "  First 10 bytes: ";
-        for (size_t i = 0; i < std::min((size_t)10, decoded_data.size()); i++) {
-            std::cout << (int)decoded_data[i] << " ";
-        }
-        std::cout << "\n";
-
-        decoded_data = BWT::inverse_transform(decoded_data, header.bwt_primary_index);
-        std::cout << "  BWT reversed. Size: " << decoded_data.size() << " bytes\n";
-    }
-
-    // Write output file
-    try {
-        FileIO::write_file(output_file, decoded_data);
-    } catch (const std::exception& e) {
-        std::cerr << "Error writing output file: " << e.what() << std::endl;
-        return 1;
-    }
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-    // Print results
-    if (verbose) {
-        std::cout << "\n╔══════════════════════════════════════════╗\n";
-        std::cout << "║         Decompression Complete!         ║\n";
-        std::cout << "╚══════════════════════════════════════════╝\n\n";
-        std::cout << "Input file:      " << input_file << "\n";
-        std::cout << "Output file:     " << output_file << "\n";
-        std::cout << "Compressed size: " << compressed_data.size() << " bytes\n";
-        std::cout << "Original size:   " << decoded_data.size() << " bytes\n";
-        std::cout << "Decompression time: " << duration.count() << " ms\n";
-        std::cout << "Throughput:      " << (decoded_data.size() / 1024.0 / (duration.count() / 1000.0))
-                  << " KB/s\n";
     }
 
     return 0;

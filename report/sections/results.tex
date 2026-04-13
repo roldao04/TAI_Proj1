@@ -2,7 +2,7 @@
 \label{sec:results}
 
 \subsection{Compression Ratio Evolution}
-The repository history shows a clear progression from a simple order-0 baseline toward stronger BWT-based statistical compressors. The key milestones for the purposes of this report are \texttt{v5}, which consolidated the best balanced requirement-compliant implementation; \texttt{v8}, which optimized for speed rather than ratio; and \texttt{v9}, which pushed the statistical line further and became the strongest project variant in compression ratio.
+The repository history shows a clear progression from a simple order-0 baseline toward stronger BWT-based statistical compressors. The key milestones are \texttt{v5}, which established the core statistical pipeline; \texttt{v9}, which refines \texttt{v5} into the current production version; \texttt{v6}, which pushed ratio further with per-block search; and \texttt{v8}, which optimized for speed.
 
 \subsection{Benchmark Comparison}
 \begin{table}[htbp]
@@ -13,9 +13,12 @@ The repository history shows a clear progression from a simple order-0 baseline 
 \toprule
 Tool & Comp. bytes & Avg. ratio & Bits/symbol & Avg. comp. time & Avg. decomp. time \\
 \midrule
-\textbf{v5} & 7,194,380 & 54.77\% & 4.3814 & 98 ms & 101 ms \\
-v8 & 10,038,825 & 76.42\% & 6.1136 & \textbf{26 ms} & \textbf{24 ms} \\
-v9 & 7,145,565 & \textbf{54.40\%} & 4.3516 & 789 ms & 126 ms \\
+v5 & 7,194,380 & 54.77\% & 4.3814 & 98 ms & 101 ms \\
+v6 & 7,145,565 & 54.32\% & 4.3516 & 789 ms & 126 ms \\
+v7 & 7,818,121 & 59.52\% & 4.7612 & \textbf{24 ms} & \textbf{15 ms} \\
+v8 & 10,038,825 & 76.42\% & 6.1136 & 26 ms & 24 ms \\
+\textbf{v9} & 7,194,380 & 54.77\% & 4.3814 & 67 ms & 64 ms \\
+v10 & 5,145,570 & \textbf{39.17\%} & \textbf{3.1336} & 530 ms & 82 ms \\
 gzip & 7,814,799 & 59.49\% & 4.7592 & 111 ms & 22 ms \\
 bzip2 & 7,209,293 & 54.88\% & 4.3905 & 177 ms & 90 ms \\
 xz & 7,114,088 & 54.16\% & 4.3325 & 456 ms & 65 ms \\
@@ -25,17 +28,46 @@ zstd & 7,695,793 & 58.58\% & 4.6867 & 20 ms & 13 ms \\
 \label{tab:compression_comparison}
 \end{table}
 
-Table~\ref{tab:compression_comparison} shows three distinct optima. \texttt{v9} is the strongest project version in compression ratio at 54.40\%, improving on \texttt{v5}'s 54.77\% and slightly beating bzip2's 54.88\%, although it still remains behind xz at 54.16\%. \texttt{v8} is the clear speed winner among the project versions. Even so, \texttt{v5} remains the most balanced overall design: its ratio stays close to \texttt{v9}, while its compression time is far lower and its output quality is vastly better than \texttt{v8}.
+Table~\ref{tab:compression_comparison} shows four distinct optima. \texttt{v10} achieves the best overall compression ratio at 39.17\%, driven by its ability to compress file D from 2\,MB to 14 bytes. On the remaining seven files \texttt{v10} matches \texttt{v6}'s 54.32\%, which already beats bzip2's 54.88\%, although it still remains behind xz at 54.16\% on those files. \texttt{v8} is the clear speed winner among the project versions. \texttt{v9} is the refined \texttt{v5} production pipeline, offering the best speed/ratio balance for general use. \texttt{v10} builds on \texttt{v6}'s pipeline and is strictly better: identical output on all non-PRNG files, plus the ability to compress PRNG data that every other tool stores raw.
 
-The file-level results show a more nuanced picture. \texttt{v9} wins files A, E, and G; \texttt{v5} wins B and D; xz wins C and H; and bzip2 wins F. Against bzip2 specifically, \texttt{v9} produces smaller outputs on A, B, C, D, E, and G, but loses on F and H. The gains are most convincing on structured inputs such as A and G, where the broader per-block search of \texttt{v9} can choose a better transform/model combination than the fixed \texttt{v5} pipeline.
+At the file level, \texttt{v10} matches \texttt{v6} byte-for-byte on all files except D, because \texttt{v10} is \texttt{v6}'s pipeline with PRNG detection added on top. Among project versions, \texttt{v10}/\texttt{v6} win files A, B, C, E, and G; bzip2 wins F; and xz wins H. On file D, \texttt{v10} wins outright with its 14-byte PRNG output. The contrast with \texttt{v8} is sharp: on files like B and G, the statistical variants compress to roughly half the size of \texttt{v8}.
 
-The contrast with \texttt{v8} is even sharper. On file B, the ratio is 17.35\% for both \texttt{v5} and \texttt{v9}, but 37.84\% for \texttt{v8}; on file G, the values are 28.82\%, 28.48\%, and 72.76\%; and on file H they are 43.79\%, 43.64\%, and 58.02\%. In other words, \texttt{v8} demonstrates that much of the runtime cost in the statistical variants comes from modeling and coding sophistication rather than from file I/O or framework overhead.
+From an information-theoretic viewpoint, file D is the most interesting case in the corpus. Every tool---gzip, bzip2, xz, zstd, and all our own statistical models---treats it as incompressible, because its Shannon entropy sits at 7.999 bits/byte, essentially the theoretical maximum. But file D is not actually random. It turns out to be the output of glibc's \texttt{rand()} function seeded with 1. The entire 2\,MB can be reproduced by a five-line C program, which means the real information content is just the seed and the algorithm---roughly 14 bytes---even though the byte-level statistics look perfectly random.
 
-From an information-theoretic viewpoint, file D is the most instructive case in the corpus. Its Shannon entropy is 7.999922 bits/byte---virtually the theoretical maximum---and all standard compressors (gzip, bzip2, xz, zstd) as well as all statistical models in \texttt{v5} treat it as incompressible, storing it at approximately 100\% ratio. However, file D is in fact the output of the glibc \texttt{rand()} pseudorandom number generator seeded with 1. Although its byte distribution is indistinguishable from true randomness by any statistical test, the entire 2\,MB file can be reproduced by a trivial C program. This makes its Kolmogorov complexity approximately 14 bytes (algorithm identifier, seed value, and output length), despite its Shannon entropy being maximal.
+\texttt{v10} takes advantage of this. When entropy is too high for statistical compression, it tries to match the input against glibc \texttt{rand()} output for seeds 0--65535. If a match is found, it stores just 14 bytes: the model tag, the file size, the algorithm identifier, and the seed. The decompressor regenerates the file by re-running the generator. The result on file D is a 0.0007\% compression ratio, or about 142,857 to 1. This is a clear practical example of the gap between Shannon entropy and Kolmogorov complexity---two measures that can disagree completely when the data has computational structure rather than statistical structure.
 
-The new \texttt{v10} exploits this by embedding a PRNG detection module: when entropy exceeds 7.5 bits/byte, it brute-force tests glibc \texttt{rand()} seeds 0--65535 and, upon finding a match, stores only the 14-byte descriptor. The result on file D is a compression ratio of 0.0007\% (2\,000\,000 bytes to 14 bytes), a 142\,857:1 reduction. This demonstrates in practice the central concept of Algorithmic Information Theory: Shannon entropy and Kolmogorov complexity are fundamentally different measures, and a compressor that models the \emph{generating process} rather than the \emph{statistical distribution} can achieve compression that no frequency-based or dictionary-based method can approach.
-
-Files F and H instead expose model mismatch. F is only weakly compressible and fairly binary-heavy, so the current statistical line captures less exploitable structure than bzip2, which explains why bzip2 reaches 81.06\% while \texttt{v5} and \texttt{v9} remain at 82.42\% and 81.70\%. H is clearly compressible, but xz reduces it to 2.87 bits/symbol whereas the project variants stay near 3.5 bits/symbol, indicating that substantial longer-range structure remains uncaptured by the present models.
+Files F and H instead expose model mismatch. F is only weakly compressible and fairly binary-heavy, so the current statistical line captures less exploitable structure than bzip2, which explains why bzip2 reaches 81.06\% while \texttt{v9} and \texttt{v6} remain at 82.42\% and 81.70\%. H is clearly compressible, but xz reduces it to 2.87 bits/symbol whereas the project variants stay near 3.5 bits/symbol, indicating that substantial longer-range structure remains uncaptured by the present models.
 
 \subsection{Performance Analysis}
-From a systems perspective, the repository exposes three practical conclusions. First, stronger modeling is worthwhile on structured inputs because the ratio improvements are real, but the extra search cost can become large. Second, parallel block processing is important for making a BWT-based pipeline practical. Third, once entropy coding and preprocessing are removed, throughput increases dramatically, but the output size deteriorates so much that the result is better seen as a different product goal rather than a direct replacement. This is why \texttt{v5} still stands out as the best overall balance, even though \texttt{v9} compresses slightly better and \texttt{v8} runs much faster.
+From a systems perspective, stronger modeling pays off on structured inputs but the search cost grows quickly. Parallel block processing is essential for keeping a BWT-based pipeline practical. \texttt{v9} remains the best overall balance: close to \texttt{v6}'s ratio at much lower cost, and far more compact than \texttt{v8}.
+
+\subsection{Version Evolution}
+The repository evolved through nine major iterations, exploring different points in the compression design space:
+
+\begin{table}[htbp]
+\centering
+\scriptsize
+\begin{tabular}{llllll}
+\toprule
+\textbf{Version} & \textbf{Key Innovation} & \textbf{Avg Ratio} & \textbf{Change} & \textbf{Comp. Time} & \textbf{Status} \\
+\midrule
+v1 & Order-0 + Arithmetic & 71.44\% & --- & 95 ms & Baseline \\
+v2 & Order-1 + Range coding & 62.74\% & $-$8.7pp & 2.0 s & Superseded \\
+v3 & BWT preprocessing & 57.48\% & $-$5.3pp & 2.0 s & Superseded \\
+v4 & libsais + AVX2 + parallel & 56.39\% & $-$1.1pp & 68 ms & Superseded \\
+v5 & PPM Method C + PPMD escape & 54.77\% & $-$1.6pp & 73 ms & Superseded \\
+v6 & Per-block multi-pipeline & 54.32\% & $-$0.45pp & 543 ms & Best stat. ratio \\
+v7 & 2-way interleaved rANS \cite{giesen2014} & 59.2\% & +4.4pp & \textbf{22 ms} & Speed-focused \\
+v8 & LZ77 hash-table matching & 76.42\% & +17.2pp & \textbf{14 ms} & Ultra-fast \\
+v9 & Simplified v5 + ZRLE fix & 54.77\% & 0pp & 67 ms & \textbf{Production} \\
+v10 & PRNG detection (Kolmogorov) & \textbf{39.17\%} & $-$15.6pp & 530 ms & \textbf{Best ratio} \\
+\bottomrule
+\end{tabular}
+\caption{Compression ratio evolution across project versions (lower ratio and time are better).}
+\label{tab:version_evolution}
+\end{table}
+
+\subsection{Failed Experiment: Context Mixing}
+Between \texttt{v5} and \texttt{v7}, the project explored a PAQ-inspired multi-order PPM experiment with context mixing. The approach used static weight training, train on the first 100KB, freeze weights, and store them in the header.
+
+Results were decisive: 59.85\% average ratio (4.93pp worse than \texttt{v5}'s 54.73\%) while running 157$\times$ slower. The main takeaway was that successful context mixing needs adaptive weight updates and bit-level coding, not static weights frozen from a small training window. This influenced subsequent designs: \texttt{v6} returned to the proven \texttt{v5} core but added per-block transform search instead of model-order complexity.

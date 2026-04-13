@@ -9,9 +9,7 @@
 #include "utils/file_io.h"
 #include "utils/stream_header.h"
 #include "transform/bwt.h"
-#include "transform/lzp.h"
 #include "transform/mtf.h"
-#include "transform/x86_filter.h"
 #include "transform/zero_rle.h"
 
 /*
@@ -29,7 +27,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  G07 v9.0 - Fast Lossless Decompression\n";
         std::cout << "═══════════════════════════════════════════════════════\n";
         std::cout << "\nUsage: " << argv[0] << " <compressed_file> <output_file>\n\n";
-        std::cout << "Handles v9 formats only (model types 0x00-0x08, 0xFF)\n";
+        std::cout << "Handles v5 formats only (model types 0x00-0x08, 0xFF)\n";
         std::cout << "  • Order-0, Order-1, rANS Order-0\n";
         std::cout << "  • BWT + MTF + ZRLE variations\n";
         std::cout << "  • Uncompressed (0xFF)\n";
@@ -134,17 +132,13 @@ int main(int argc, char* argv[]) {
 
             StreamHeader::ParallelHeader ph = StreamHeader::parse_parallel_header(compressed_data);
             size_t num_blocks = ph.blocks.size();
-            std::cout << "Model type: Parallel BWT-family + Order-1/2 (" << num_blocks << " blocks)" << std::endl;
+            std::cout << "Model type: Parallel BWT+MTF+ZRLE+Order-1 (" << num_blocks << " blocks)" << std::endl;
             std::cout << "Original size: " << ph.original_size << " bytes" << std::endl;
 
             std::vector<std::vector<uint8_t>> block_outputs(num_blocks);
 
             auto decompress_one_block = [&](size_t bi) {
                 const StreamHeader::ParallelBlockMeta& meta = ph.blocks[bi];
-                uint32_t block_base_offset = 0;
-                for (size_t j = 0; j < bi; j++) {
-                    block_base_offset += ph.blocks[j].original_block_size;
-                }
 
                 size_t blk_offset = ph.data_section_offset;
                 for (size_t j = 0; j < bi; j++) {
@@ -169,16 +163,16 @@ int main(int argc, char* argv[]) {
                     int sym;
 
                     if (ctx_model.has_order2_context()) {
+                        // Try O2 first
                         uint32_t cum = decoder.get_current_count(ctx_model.get_order2_total());
                         sym = ctx_model.find_symbol_and_get_range_o2(cum, lo, hi, total);
                         if (sym < 0) throw std::runtime_error("Symbol not found during O2 decompression");
                         decoder.decode_symbol(lo, hi, total);
                         if (sym == 256) {
+                            // O2 escape: fall to O1/O0
                             if (ctx_model.has_order1_context()) {
-                                const uint32_t* o2_freq = ctx_model.get_order2_freq_ptr();
-                                uint32_t o1_total = ctx_model.get_order1_total_excl_ctx(o2_freq);
-                                cum = decoder.get_current_count(o1_total);
-                                sym = ctx_model.find_symbol_and_get_range_order1_excl_ctx(cum, o2_freq, o1_total, lo, hi, total);
+                                cum = decoder.get_current_count(ctx_model.get_order1_total());
+                                sym = ctx_model.find_symbol_and_get_range(1, cum, lo, hi, total);
                                 if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                                 decoder.decode_symbol(lo, hi, total);
                                 if (sym == 256) {
@@ -231,12 +225,6 @@ int main(int argc, char* argv[]) {
                 }
                 if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_BWT)) {
                     decoded = BWT::inverse_transform(decoded, meta.bwt_primary_index);
-                }
-                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_X86)) {
-                    decoded = X86Filter::decode(decoded, block_base_offset);
-                }
-                if (StreamHeader::has_flag(meta.transform_flags, StreamHeader::TRANSFORM_LZP)) {
-                    decoded = LZPredictor::decode(decoded, meta.original_block_size);
                 }
 
                 block_outputs[bi] = std::move(decoded);
@@ -335,9 +323,6 @@ int main(int argc, char* argv[]) {
 
             ContextModel model;
             model.set_encoding_method_simple();
-            if (model_type == ModelType::ORDER_2) {
-                model.enable_order2();
-            }
             model.init_adaptive();
 
             std::vector<uint8_t> encoded_data(compressed_data.begin() + header.payload_offset, compressed_data.end());
@@ -349,40 +334,13 @@ int main(int argc, char* argv[]) {
                 uint32_t lo, hi, total;
                 int sym;
 
-                if (model.has_order2_context()) {
-                    uint32_t cum = decoder.get_current_count(model.get_order2_total());
-                    sym = model.find_symbol_and_get_range_o2(cum, lo, hi, total);
-                    if (sym < 0) throw std::runtime_error("Symbol not found during O2 decompression");
-                    decoder.decode_symbol(lo, hi, total);
-                    if (sym == 256) {
-                        if (model.has_order1_context()) {
-                            const uint32_t* o2_freq = model.get_order2_freq_ptr();
-                            uint32_t o1_total = model.get_order1_total_excl_ctx(o2_freq);
-                            cum = decoder.get_current_count(o1_total);
-                            sym = model.find_symbol_and_get_range_order1_excl_ctx(cum, o2_freq, o1_total, lo, hi, total);
-                            if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
-                            decoder.decode_symbol(lo, hi, total);
-                            if (sym == 256) {
-                                const uint32_t* ctx_freq = model.get_order1_freq_ptr();
-                                uint32_t excl_total = model.get_order0_total_excl_ctx(ctx_freq);
-                                cum = decoder.get_current_count(excl_total);
-                                sym = model.find_symbol_and_get_range_excl_ctx(cum, ctx_freq, excl_total, lo, hi, total);
-                                if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
-                                decoder.decode_symbol(lo, hi, total);
-                            }
-                        } else {
-                            cum = decoder.get_current_count(model.get_order0_total());
-                            sym = model.find_symbol_and_get_range(0, cum, lo, hi, total);
-                            if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
-                            decoder.decode_symbol(lo, hi, total);
-                        }
-                    }
-                } else if (model.has_order1_context()) {
+                if (model.has_order1_context()) {
                     uint32_t cum = decoder.get_current_count(model.get_order1_total());
                     sym = model.find_symbol_and_get_range(1, cum, lo, hi, total);
                     if (sym < 0) throw std::runtime_error("Symbol not found during decompression");
                     decoder.decode_symbol(lo, hi, total);
                     if (sym == 256) {
+                        // Escape: fall back to order-0 with Method C exclusions
                         const uint32_t* ctx_freq = model.get_order1_freq_ptr();
                         uint32_t excl_total = model.get_order0_total_excl_ctx(ctx_freq);
                         cum = decoder.get_current_count(excl_total);
@@ -432,16 +390,6 @@ int main(int argc, char* argv[]) {
             auto end_inv_bwt = std::chrono::high_resolution_clock::now();
             auto inv_bwt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_inv_bwt - start_inv_bwt).count();
             std::cout << "Inverse BWT complete (" << inv_bwt_time << " ms)" << std::endl;
-        }
-
-        if (StreamHeader::has_flag(header.transform_flags, StreamHeader::TRANSFORM_X86)) {
-            std::cout << "Reversing x86 filter..." << std::endl;
-            output_data = X86Filter::decode(output_data);
-        }
-
-        if (StreamHeader::has_flag(header.transform_flags, StreamHeader::TRANSFORM_LZP)) {
-            std::cout << "Reversing LZP preprocessing..." << std::endl;
-            output_data = LZPredictor::decode(output_data, header.original_size);
         }
 
         if (output_data.size() != header.original_size) {

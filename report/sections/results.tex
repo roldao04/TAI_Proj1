@@ -15,7 +15,7 @@ Tool & Comp. bytes & Avg. ratio & Bits/symbol & Avg. comp. time & Avg. decomp. t
 \midrule
 \textbf{v5} & 7,194,380 & 54.77\% & 4.3814 & 98 ms & 101 ms \\
 v8 & 10,038,825 & 76.42\% & 6.1136 & \textbf{26 ms} & \textbf{24 ms} \\
-v9 & 7,145,565 & \textbf{54.40\%} & 4.3516 & 789 ms & 126 ms \\
+v9 & 7,145,565 & \textbf{54.32\%} & 4.3516 & 789 ms & 126 ms \\
 gzip & 7,814,799 & 59.49\% & 4.7592 & 111 ms & 22 ms \\
 bzip2 & 7,209,293 & 54.88\% & 4.3905 & 177 ms & 90 ms \\
 xz & 7,114,088 & 54.16\% & 4.3325 & 456 ms & 65 ms \\
@@ -25,7 +25,7 @@ zstd & 7,695,793 & 58.58\% & 4.6867 & 20 ms & 13 ms \\
 \label{tab:compression_comparison}
 \end{table}
 
-Table~\ref{tab:compression_comparison} shows three distinct optima. \texttt{v9} is the strongest project version in compression ratio at 54.40\%, improving on \texttt{v5}'s 54.77\% and slightly beating bzip2's 54.88\%, although it still remains behind xz at 54.16\%. \texttt{v8} is the clear speed winner among the project versions. Even so, \texttt{v5} remains the most balanced overall design: its ratio stays close to \texttt{v9}, while its compression time is far lower and its output quality is vastly better than \texttt{v8}.
+Table~\ref{tab:compression_comparison} shows three distinct optima. \texttt{v9} is the strongest project version in compression ratio at 54.32\%, improving on \texttt{v5}'s 54.77\% and slightly beating bzip2's 54.88\%, although it still remains behind xz at 54.16\%. \texttt{v8} is the clear speed winner among the project versions. Even so, \texttt{v5} remains the most balanced overall design: its ratio stays close to \texttt{v9}, while its compression time is far lower and its output quality is vastly better than \texttt{v8}.
 
 The file-level results show a more nuanced picture. \texttt{v9} wins files A, E, and G; \texttt{v5} wins B and D; xz wins C and H; and bzip2 wins F. Against bzip2 specifically, \texttt{v9} produces smaller outputs on A, B, C, D, E, and G, but loses on F and H. The gains are most convincing on structured inputs such as A and G, where the broader per-block search of \texttt{v9} can choose a better transform/model combination than the fixed \texttt{v5} pipeline.
 
@@ -35,3 +35,35 @@ From an information-theoretic viewpoint, file D behaves essentially as an incomp
 
 \subsection{Performance Analysis}
 From a systems perspective, the repository exposes three practical conclusions. First, stronger modeling is worthwhile on structured inputs because the ratio improvements are real, but the extra search cost can become large. Second, parallel block processing is important for making a BWT-based pipeline practical. Third, once entropy coding and preprocessing are removed, throughput increases dramatically, but the output size deteriorates so much that the result is better seen as a different product goal rather than a direct replacement. This is why \texttt{v5} still stands out as the best overall balance, even though \texttt{v9} compresses slightly better and \texttt{v8} runs much faster.
+
+\subsection{Version Evolution}
+The repository evolved through nine major iterations, exploring different points in the compression design space:
+
+\begin{table}[htbp]
+\centering
+\scriptsize
+\begin{tabular}{llllll}
+\toprule
+\textbf{Version} & \textbf{Key Innovation} & \textbf{Avg Ratio} & \textbf{Change} & \textbf{Comp. Time} & \textbf{Status} \\
+\midrule
+v1 & Order-0 + Arithmetic & 71.44\% & --- & 95 ms & Baseline \\
+v2 & Order-1 + Range coding & 62.74\% & $-$8.7pp & 2.0 s & Superseded \\
+v3 & BWT preprocessing & 57.48\% & $-$5.3pp & 2.0 s & Superseded \\
+v4 & libsais + AVX2 + parallel & 56.39\% & $-$1.1pp & 68 ms & Superseded \\
+v5 & PPM Method C + PPMD escape & 54.77\% & $-$1.6pp & 73 ms & \textbf{Production} \\
+v6 & Multi-order PPM + mixing & 59.85\% & +5.1pp & 9.6 s & \textbf{Failed} \\
+v7 & 2-way interleaved rANS & 59.2\% & +4.4pp & \textbf{22 ms} & Speed-focused \\
+v8 & LZ77 hash-table matching & 76.42\% & +17.2pp & \textbf{14 ms} & Ultra-fast \\
+v9 & Per-block multi-pipeline & 54.32\% & $-$0.45pp & 543 ms & \textbf{Best ratio} \\
+\bottomrule
+\end{tabular}
+\caption{Compression ratio evolution across project versions (lower ratio and time are better).}
+\label{tab:version_evolution}
+\end{table}
+
+\subsection{Failed Experiment: Context Mixing}
+Between \texttt{v5} and \texttt{v7}, the project explored \texttt{v6}, which attempted PAQ-inspired multi-order PPM with context mixing. The approach used static weight training, train on the first 100KB, freeze weights, and store them in the header.
+
+Results were decisive: \texttt{v6} achieved 59.85\% average ratio (4.93pp worse than \texttt{v5}'s 54.73\%) while running 157$\times$ slower. Key findings: (1) BWT preprocessing \textit{helped} multi-order PPM by 8pp; (2) static weights cannot adapt to different file sections, a fundamental limitation versus PAQ's adaptive mixing; (3) byte-level range coding leaves information on the table compared to PAQ's bit-level arithmetic coding.
+
+This confirmed that successful context mixing requires adaptive weight updates and bit-level coding precision, explaining PAQ's extreme ratios at extreme runtime costs. The lesson influenced subsequent designs: \texttt{v7}/\texttt{v8} prioritized speed, while \texttt{v9} returned to the proven \texttt{v5} statistical core but added per-block transform search instead of model-order complexity.

@@ -1,7 +1,7 @@
 \section{Introduction}
 \label{sec:introduction}
 
-Lossless compression is fundamentally a two-part problem: the encoder must first model the input so that probable symbols receive high estimated probability, and only then can the coder map those probabilities into short bit representations. In practice, the quality of a compressor depends on how well the model captures structure in the data and how efficiently the coding stage turns that structure into a compact stream.
+Lossless compression is fundamentally a two-part problem: the encoder must first model the input so that probable symbols receive high estimated probability, and only then can the coder map those probabilities into short bit representations \cite{shannon1948}. In practice, the quality of a compressor depends on how well the model captures structure in the data and how efficiently the coding stage turns that structure into a compact stream.
 
 This project was developed in the context of the Algorithmic Information Theory course and evolved through several compression strategies. The repository now contains three especially relevant variants. \texttt{v5} is the clearest balanced milestone and still offers the best overall speed/ratio balance; \texttt{v9} extends the same statistical family and achieves the best compression ratio among the project versions; and \texttt{v8} explores the opposite design point, replacing the statistical pipeline with a very fast LZ77-style matcher.
 

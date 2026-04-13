@@ -250,10 +250,10 @@ else
 	@exit 1
 endif
 
-# Full benchmark: all versions on all files
+# Full benchmark: all versions on all files + external tools
 benchmark: all
-	@echo "Running comprehensive benchmark (all versions on all files)..."
-	@bash benchmarks/benchmark.sh
+	@echo "Running comprehensive benchmark (G07 versions + gzip/bzip2/xz/zstd)..."
+	@bash benchmarks/benchmark_all.sh
 
 $(BIN)/test_context_model: $(OBJ)/test_context_model.o $(OBJ)/context_model.o $(OBJ)/range_coder.o | $(BIN)
 	@echo "Linking test_context_model..."

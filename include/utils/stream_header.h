@@ -20,6 +20,7 @@ enum class ModelType : uint8_t {
     RANS_ORDER_0 = 8,   // rANS (ryg) static Order-0 — zero-division decode
     RANS_INTERLEAVED_BWT_MTF = 11, // v7: BWT + MTF + 2-way interleaved rANS Order-0 (speed)
     LZ77_FAST = 12,                // v8: LZ4-style LZ77 ultra-fast (no entropy coding)
+    PRNG_DETECTED = 13,            // v9: Kolmogorov compression — PRNG seed + algo ID
     UNCOMPRESSED = 255
 };
 

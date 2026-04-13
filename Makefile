@@ -43,6 +43,9 @@ V9_MODELS = $(V7_MODELS)
 # v9 specific models (same model set as v5)
 V9_MODELS = $(V5_MODELS)
 
+# v10 specific models (v5 + PRNG detector)
+V10_MODELS = $(V5_MODELS) $(OBJ)/prng_model.o
+
 # ============================================
 # AUTO-DETECT AVAILABLE VERSIONS
 # ============================================
@@ -176,6 +179,10 @@ $(OBJ)/prediction_utils.o: $(SRC)/model/prediction_utils.cpp | $(OBJ)
 
 $(OBJ)/bit_ppm.o: $(SRC)/model/bit_ppm.cpp | $(OBJ)
 	@echo "Compiling bit_ppm.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ)/prng_model.o: $(SRC)/model/prng_model.cpp | $(OBJ)
+	@echo "Compiling prng_model.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Shared utilities

@@ -2,37 +2,36 @@
 \label{sec:results}
 
 \subsection{Compression Ratio Evolution}
-The repository history shows a clear progression from a simple order-0 baseline toward stronger BWT-based statistical compressors. The key milestones for the purposes of this report are \texttt{g07-v5}, which consolidated the best balanced requirement-compliant implementation; \texttt{g07-v8}, which optimized for speed rather than ratio; and \texttt{g07-v9}, which pushed the statistical line further and became the strongest G07 variant in compression ratio.
+The repository history shows a clear progression from a simple order-0 baseline toward stronger BWT-based statistical compressors. The key milestones for the purposes of this report are \texttt{v5}, which consolidated the best balanced requirement-compliant implementation; \texttt{v8}, which optimized for speed rather than ratio; and \texttt{v9}, which pushed the statistical line further and became the strongest project variant in compression ratio.
 
 \subsection{Benchmark Comparison}
 \begin{table}[htbp]
-\caption{Aggregate benchmark results from the 8-file repository corpus. Lower ratio is better.}
+\caption{Aggregate benchmark results from the 8-file repository corpus. Lower ratio and bits/symbol are better.}
 \centering
-\small
-\begin{tabular}{lccc}
+\scriptsize
+\begin{tabular}{lccccc}
 \toprule
-Tool & Avg. ratio & Avg. comp. time & Avg. decomp. time \\
+Tool & Comp. bytes & Avg. ratio & Bits/symbol & Avg. comp. time & Avg. decomp. time \\
 \midrule
-\textbf{g07-v5} & 54.77\% & 98 ms & 101 ms \\
-g07-v8 & 76.42\% & \textbf{26 ms} & \textbf{24 ms} \\
-g07-v9 & \textbf{54.40\%} & 789 ms & 126 ms \\
-gzip & 59.49\% & 111 ms & 22 ms \\
-bzip2 & 54.88\% & 177 ms & 90 ms \\
-xz & 54.16\% & 456 ms & 65 ms \\
-zstd & 58.58\% & 20 ms & 13 ms \\
+\textbf{v5} & 7,194,380 & 54.77\% & 4.3814 & 98 ms & 101 ms \\
+v8 & 10,038,825 & 76.42\% & 6.1136 & \textbf{26 ms} & \textbf{24 ms} \\
+v9 & 7,145,565 & \textbf{54.40\%} & 4.3516 & 789 ms & 126 ms \\
+gzip & 7,814,799 & 59.49\% & 4.7592 & 111 ms & 22 ms \\
+bzip2 & 7,209,293 & 54.88\% & 4.3905 & 177 ms & 90 ms \\
+xz & 7,114,088 & 54.16\% & 4.3325 & 456 ms & 65 ms \\
+zstd & 7,695,793 & 58.58\% & 4.6867 & 20 ms & 13 ms \\
 \bottomrule
 \end{tabular}
 \label{tab:compression_comparison}
 \end{table}
 
-Table~\ref{tab:compression_comparison} shows three distinct optima. \texttt{g07-v9} is the strongest project version in compression ratio at 54.40\%, improving on \texttt{g07-v5}'s 54.77\% and slightly beating bzip2's 54.88\%, although it still remains behind xz at 54.16\%. \texttt{g07-v8} is the clear speed winner among the project versions. Even so, \texttt{g07-v5} remains the most balanced overall design: its ratio stays close to \texttt{g07-v9}, while its compression time is far lower and its output quality is vastly better than \texttt{g07-v8}.
+Table~\ref{tab:compression_comparison} shows three distinct optima. \texttt{v9} is the strongest project version in compression ratio at 54.40\%, improving on \texttt{v5}'s 54.77\% and slightly beating bzip2's 54.88\%, although it still remains behind xz at 54.16\%. \texttt{v8} is the clear speed winner among the project versions. Even so, \texttt{v5} remains the most balanced overall design: its ratio stays close to \texttt{v9}, while its compression time is far lower and its output quality is vastly better than \texttt{v8}.
 
-The file-level results show a more nuanced picture. \texttt{g07-v9} wins files A, E, and G; \texttt{g07-v5} wins B and D; xz wins C and H; and bzip2 wins F. Against bzip2 specifically, \texttt{g07-v9} produces smaller outputs on A, B, C, D, E, and G, but loses on F and H. The gains are most convincing on structured inputs such as A and G, where the broader per-block search of \texttt{g07-v9} can choose a better transform/model combination than the fixed \texttt{g07-v5} pipeline.
+The file-level results show a more nuanced picture. \texttt{v9} wins files A, E, and G; \texttt{v5} wins B and D; xz wins C and H; and bzip2 wins F. Against bzip2 specifically, \texttt{v9} produces smaller outputs on A, B, C, D, E, and G, but loses on F and H. The gains are most convincing on structured inputs such as A and G, where the broader per-block search of \texttt{v9} can choose a better transform/model combination than the fixed \texttt{v5} pipeline.
 
-The contrast with \texttt{g07-v8} is even sharper. On file B, the ratio is 17.35\% for both \texttt{g07-v5} and \texttt{g07-v9}, but 37.84\% for \texttt{g07-v8}; on file G, the values are 28.82\%, 28.48\%, and 72.76\%; and on file H they are 43.79\%, 43.64\%, and 58.02\%. In other words, \texttt{g07-v8} demonstrates that much of the runtime cost in the statistical variants comes from modeling and coding sophistication rather than from file I/O or framework overhead.
+The contrast with \texttt{v8} is even sharper. On file B, the ratio is 17.35\% for both \texttt{v5} and \texttt{v9}, but 37.84\% for \texttt{v8}; on file G, the values are 28.82\%, 28.48\%, and 72.76\%; and on file H they are 43.79\%, 43.64\%, and 58.02\%. In other words, \texttt{v8} demonstrates that much of the runtime cost in the statistical variants comes from modeling and coding sophistication rather than from file I/O or framework overhead.
+
+From an information-theoretic viewpoint, file D behaves essentially as an incompressible source: all tools remain at about 8 bits/symbol, so the main objective there is minimal overhead rather than real compression. Files F and H instead expose model mismatch. F is only weakly compressible and fairly binary-heavy, so the current statistical line captures less exploitable structure than bzip2, which explains why bzip2 reaches 81.06\% while \texttt{v5} and \texttt{v9} remain at 82.42\% and 81.70\%. H is clearly compressible, but xz reduces it to 2.87 bits/symbol whereas the project variants stay near 3.5 bits/symbol, indicating that substantial longer-range structure remains uncaptured by the present models.
 
 \subsection{Performance Analysis}
-From a systems perspective, the repository exposes three practical conclusions. First, stronger modeling is worthwhile on structured inputs because the ratio improvements are real, but the extra search cost can become large. Second, parallel block processing is important for making a BWT-based pipeline practical. Third, once entropy coding and preprocessing are removed, throughput increases dramatically, but the output size deteriorates so much that the result is better seen as a different product goal rather than a direct replacement. This is why \texttt{g07-v5} still stands out as the best overall balance, even though \texttt{g07-v9} compresses slightly better and \texttt{g07-v8} runs much faster.
-
-\subsection{Ablation Studies}
-The version history also acts as an ablation study. Earlier versions without BWT or without the later order-1 refinements are consistently worse in ratio, while the v5 documentation attributes its gains to a combination of Method C exclusions, improved escape estimation, adaptive block sizing, and block-level parallelism. \texttt{g07-v9} then shows that further gains come from widening the search space rather than from one isolated trick. No single optimization explains the final result: the competitive ratios come from several modest improvements that compound well.
+From a systems perspective, the repository exposes three practical conclusions. First, stronger modeling is worthwhile on structured inputs because the ratio improvements are real, but the extra search cost can become large. Second, parallel block processing is important for making a BWT-based pipeline practical. Third, once entropy coding and preprocessing are removed, throughput increases dramatically, but the output size deteriorates so much that the result is better seen as a different product goal rather than a direct replacement. This is why \texttt{v5} still stands out as the best overall balance, even though \texttt{v9} compresses slightly better and \texttt{v8} runs much faster.

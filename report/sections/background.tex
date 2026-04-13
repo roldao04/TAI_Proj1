@@ -1,14 +1,8 @@
 \section{Background}
 \label{sec:background}
 
-\subsection{Information Theory}
-Shannon's source coding view remains the right abstraction for this project: compression is only possible when the source is not uniformly random and the model can exploit that deviation from randomness \cite{shannon1948}. Entropy estimates were therefore used in the repository as a simple decision signal for model selection and for falling back to uncompressed output on near-random files.
+This project is about lossless compression, so the original file must be recovered exactly after decompression. The main idea used in our work is simple: first reorganize the data so patterns become easier to see, then model the data, and finally encode it into fewer bits.
 
-\subsection{Transform Coding}
-The Burrows--Wheeler Transform (BWT) rearranges a block so that symbols occurring in similar contexts become clustered \cite{burrows1994}. On its own, BWT is reversible but not compressive; its value comes from making the transformed stream easier to encode. The usual follow-up is Move-to-Front (MTF), which converts these clusters into many small ranks, often producing long runs of zeros. A lightweight run-length stage can then exploit those zeros before entropy coding.
+Our main compression pipeline follows this logic. In the statistical versions, the data can first pass through the Burrows--Wheeler Transform (BWT) and Move-to-Front (MTF) \cite{burrows1994}. These steps do not compress the file by themselves, but they help group similar values together, which makes the next stage more effective. After that, the compressor uses an adaptive model and range coding to generate the final compressed output \cite{rissanen1979,schindler1998}.
 
-\subsection{Statistical Modeling}
-For the modeling stage, the repository explores both order-0 and order-1 byte models. Order-0 uses only global symbol frequencies, while order-1 conditions the next byte on the previous byte and is therefore closer to a practical Prediction by Partial Matching (PPM) scheme \cite{cleary1984}. The order-1 path must also define an escape mechanism for unseen symbols so that the encoder and decoder can safely fall back to a lower-order distribution.
-
-\subsection{Entropy Coding}
-The main statistical line of development uses range coding as the core entropy coder \cite{rissanen1979,schindler1998}. The repository also experiments with rANS as a faster static alternative \cite{duda2009}. In contrast, the late \texttt{g07-v8} experiment deliberately removes entropy coding and uses an LZ77-style token stream instead \cite{ziv1977,colletlz4}; this makes it useful as a speed comparison, but not as the main statistical design.
+Not all versions of the project use the same approach. The more balanced versions, especially \texttt{v5} and \texttt{v9}, follow the statistical pipeline described above. In contrast, \texttt{v8} uses a simpler LZ77-style method \cite{ziv1977,colletlz4}. It is much faster, but it usually produces larger files. This comparison is useful because it shows the main trade-off explored in the project: stronger compression usually needs more processing time.

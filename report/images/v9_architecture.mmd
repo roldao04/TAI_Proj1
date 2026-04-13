@@ -1,0 +1,25 @@
+%%{init: {'theme': 'base', 'flowchart': {'curve': 'linear'}}}%%
+flowchart LR
+    A[Input File] --> B[Split into Blocks]
+    B --> C[Parallel Candidate Search]
+    C --> D1[Raw Path]
+    C --> D2[BWT Path]
+    C --> D3[LZP Path]
+    C --> D4[x86 Filter Path]
+    D1 --> E[Pick Best Block Configuration]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    E --> F[Order-1 or Order-2 Model]
+    F --> G[Range Coding]
+    G --> H[Flags and Compressed Output]
+
+    classDef io fill:#dbeafe,stroke:#2563eb,color:#0f172a,stroke-width:2px;
+    classDef search fill:#e0e7ff,stroke:#4f46e5,color:#312e81,stroke-width:2px;
+    classDef candidate fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px;
+    classDef model fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px;
+
+    class A,H io;
+    class B,C search;
+    class D1,D2,D3,D4 candidate;
+    class E,F,G model;

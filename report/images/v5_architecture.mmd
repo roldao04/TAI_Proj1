@@ -1,0 +1,17 @@
+%%{init: {'theme': 'base', 'flowchart': {'curve': 'linear'}}}%%
+flowchart LR
+    A[Input File] --> B[Split into Blocks]
+    B --> C[BWT]
+    C --> D[MTF]
+    D --> E[Zero-Run Encoding]
+    E --> F[Adaptive Order-1 Model]
+    F --> G[Range Coding or rANS]
+    G --> H[Compressed Output]
+
+    classDef io fill:#dbeafe,stroke:#2563eb,color:#0f172a,stroke-width:2px;
+    classDef transform fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px;
+    classDef model fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px;
+
+    class A,H io;
+    class B,C,D,E transform;
+    class F,G model;

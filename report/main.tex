@@ -29,7 +29,7 @@
   Student ID: 113968\\
   Universidade de Aveiro\\
   Aveiro, Portugal \\
-  \texttt{guilherme.rosa@ua.pt} \\
+  \texttt{guilherme.rosa60@ua.pt} \\
   \And
  João Roldão \\
   Student ID: 113920\\
@@ -48,17 +48,16 @@
 \maketitle
 
 \begin{abstract}
-We developed and benchmarked a lossless compression tool for the TAI course project, centered on statistical coding methods based on range-coder-style entropy coding. The repository now exposes three distinct design points. \texttt{g07-v9} is the strongest compression-oriented project variant in the current benchmark snapshot, reaching a 54.40\% average compressed size on the 8-file corpus (13 MiB total). \texttt{g07-v8} is the fastest G07 variant in average compression and decompression time, using an LZ77-style token stream without entropy coding and averaging 26 ms compression and 24 ms decompression. Even so, the most balanced overall design is \texttt{g07-v5}: it combines BWT, MTF, optional zero-run encoding, and an adaptive order-1 model with range coding/rANS backends, achieving 54.77\% while remaining far faster to compress than \texttt{g07-v9} and much more compact than \texttt{g07-v8}. The resulting comparison highlights the main project trade-off between compression strength, throughput, and overall practical balance.
+We developed and benchmarked a lossless compression tool for the TAI course project, centered on statistical coding methods based on range-coder-style entropy coding. The repository now exposes three distinct design points. \texttt{v9} is the strongest compression-oriented project variant in the current benchmark snapshot, reaching a 54.40\% average compressed size on the 8-file corpus (13 MiB total). \texttt{v8} is the fastest project variant in average compression and decompression time, using an LZ77-style token stream without entropy coding and averaging 26 ms compression and 24 ms decompression. Even so, the most balanced overall design is \texttt{v5}: it combines BWT, MTF, optional zero-run encoding, and an adaptive order-1 model with range coding/rANS backends, achieving 54.77\% while remaining far faster to compress than \texttt{v9} and much more compact than \texttt{v8}. The resulting comparison highlights the main project trade-off between compression strength, throughput, and overall practical balance.
 \end{abstract}
 
-% Keywords
-\keywords{Data Compression \and Burrows-Wheeler Transform \and PPM \and Range Coding \and rANS \and Parallel Processing}
 
 % Include sections
 \input{sections/introduction}
 \input{sections/background}
 \input{sections/methodology}
 \input{sections/implementation}
+\input{sections/architecture_diagrams}
 \input{sections/results}
 \input{sections/conclusion}
 

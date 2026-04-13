@@ -1,0 +1,18 @@
+%%{init: {'theme': 'base', 'flowchart': {'curve': 'linear'}}}%%
+flowchart LR
+    A[Input File] --> B{Entropy Check}
+    B -- Compressible --> C[LZ77 Hash-Table Matching]
+    C --> D[Byte-Aligned Token Stream]
+    D --> F[Final Output]
+    B -- Near-random --> E[Store Uncompressed]
+    E --> F
+
+    classDef io fill:#dbeafe,stroke:#2563eb,color:#0f172a,stroke-width:2px;
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px;
+    classDef fast fill:#fde68a,stroke:#ea580c,color:#7c2d12,stroke-width:2px;
+    classDef fallback fill:#e5e7eb,stroke:#6b7280,color:#111827,stroke-width:2px;
+
+    class A,F io;
+    class B decision;
+    class C,D fast;
+    class E fallback;

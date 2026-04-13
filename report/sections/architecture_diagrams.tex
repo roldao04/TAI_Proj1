@@ -1,0 +1,31 @@
+\section{Architecture Diagrams}
+\label{sec:architecture-diagrams}
+
+This section summarizes the compression-side architecture of the three project variants with simple left-to-right diagrams. The goal is to show the main pipeline differences between the balanced statistical design of \texttt{v5}, the speed-oriented LZ77 path of \texttt{v8}, and the broader per-block search used by \texttt{v9}.
+
+\subsection{\texttt{v5}}
+\texttt{v5} follows a fixed statistical pipeline: it splits the input into blocks, reshapes each block with BWT and MTF, optionally shrinks zero runs, and then applies adaptive modeling before entropy coding.
+
+\begin{center}
+\includegraphics[width=\linewidth]{v5_architecture.png}
+
+{\small High-level compression pipeline of \texttt{v5}.}
+\end{center}
+
+\subsection{\texttt{v8}}
+\texttt{v8} removes the transform and entropy-coding stages entirely. Instead, it relies on a fast LZ77-style matcher with a simple fallback that stores near-random data uncompressed.
+
+\begin{center}
+\includegraphics[width=\linewidth]{v8_architecture.png}
+
+{\small High-level compression pipeline of \texttt{v8}.}
+\end{center}
+
+\subsection{\texttt{v9}}
+\texttt{v9} extends the statistical line by testing several block configurations in parallel. After that search, it stores the chosen transform path and model so that decompression can replay the same sequence.
+
+\begin{center}
+\includegraphics[width=\linewidth]{v9_architecture.png}
+
+{\small High-level compression pipeline of \texttt{v9}.}
+\end{center}

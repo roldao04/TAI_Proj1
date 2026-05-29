@@ -36,10 +36,10 @@ MultiOrderPPM::MultiOrderPPM(const std::vector<int>& orders,
                              size_t max_history)
     : enabled_orders(orders),
       max_history_size(max_history),
-      hash_table_capacity_limit(hash_capacity_limit),
       current_timestamp(0),
-      history_pos(0),
-      memory_warning_shown(false) {
+      memory_warning_shown(false),
+      hash_table_capacity_limit(hash_capacity_limit),
+      history_pos(0) {
 
     // Sort orders for consistent processing
     std::sort(enabled_orders.begin(), enabled_orders.end());
@@ -618,7 +618,6 @@ bool MultiOrderPPM::get_frequencies_high_order(int order, uint32_t* freqs) {
 }
 
 void MultiOrderPPM::get_blended_frequencies(uint32_t* freqs, const std::vector<int64_t>& weights_fixed) {
-    static bool debug_once = false;  // Only print debug for first few calls
     static int debug_count = 0;
     // Disable debug output for production
     bool do_debug = false;

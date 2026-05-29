@@ -162,6 +162,10 @@ $(OBJ)/test_x86_filter.o: tests/test_x86_filter.cpp | $(OBJ)
 	@echo "Compiling test_x86_filter.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(OBJ)/test_bwt.o: tests/test_bwt.cpp | $(OBJ)
+	@echo "Compiling test_bwt.cpp..."
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
 $(OBJ)/multi_order_ppm.o: $(SRC)/model/multi_order_ppm.cpp | $(OBJ)
 	@echo "Compiling multi_order_ppm.cpp..."
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -245,12 +249,12 @@ ifdef VERSION
 	@bash benchmarks/test.sh $(FILE) $(VERSION)
 else
 	@echo "Usage: make test FILE=<file> VERSION=<version>"
-	@echo "Example: make test FILE=data/A VERSION=5"
+	@echo "Example: make test FILE=data/A VERSION=9"
 	@exit 1
 endif
 else
 	@echo "Usage: make test FILE=<file> VERSION=<version>"
-	@echo "Example: make test FILE=data/A VERSION=5"
+	@echo "Example: make test FILE=data/A VERSION=9"
 	@exit 1
 endif
 
@@ -271,6 +275,21 @@ $(BIN)/test_x86_filter: $(OBJ)/test_x86_filter.o $(OBJ)/x86_filter.o | $(BIN)
 	@echo "Linking test_x86_filter..."
 	@$(CXX) $^ -o $@ $(LDFLAGS)
 
+$(BIN)/test_bwt: $(OBJ)/test_bwt.o $(OBJ)/bwt.o $(OBJ)/libsais.o | $(BIN)
+	@echo "Linking test_bwt..."
+	@$(CXX) $^ -o $@ $(LDFLAGS)
+
+# Build and run the full unit-test suite (BWT, LZP, context model, x86 filter)
+check: $(BIN)/test_bwt $(BIN)/test_lzp $(BIN)/test_context_model $(BIN)/test_x86_filter
+	@echo ""
+	@echo "=== Running unit tests ==="
+	@./$(BIN)/test_bwt
+	@./$(BIN)/test_lzp
+	@./$(BIN)/test_context_model
+	@./$(BIN)/test_x86_filter
+	@echo ""
+	@echo "All unit tests passed."
+
 # ============================================
 # PROFILE-GUIDED OPTIMIZATION
 # ============================================
@@ -281,12 +300,12 @@ pgo: clean
 	@mkdir -p $(OBJ) $(BIN) $(PGO_DIR)
 	@$(MAKE) --no-print-directory CXXFLAGS="$(CXXFLAGS) -fprofile-generate=$(PGO_DIR)" \
 	         CFLAGS="$(CFLAGS) -fprofile-generate=$(PGO_DIR)" \
-	         LDFLAGS="$(LDFLAGS) -fprofile-generate=$(PGO_DIR)" v5
+	         LDFLAGS="$(LDFLAGS) -fprofile-generate=$(PGO_DIR)" v9
 	@echo "=== PGO Phase 2: Training run ==="
 	@for f in data/*; do \
 		echo "  Training on $$f..."; \
-		./bin/g07-v5-c "$$f" /tmp/pgo_compressed.tmp 2>/dev/null; \
-		./bin/g07-v5-d /tmp/pgo_compressed.tmp /tmp/pgo_decompressed.tmp 2>/dev/null; \
+		./bin/g07-v9-c "$$f" /tmp/pgo_compressed.tmp 2>/dev/null; \
+		./bin/g07-v9-d /tmp/pgo_compressed.tmp /tmp/pgo_decompressed.tmp 2>/dev/null; \
 		rm -f /tmp/pgo_compressed.tmp /tmp/pgo_decompressed.tmp; \
 	done
 	@echo "=== PGO Phase 3: Optimized rebuild ==="
@@ -294,8 +313,8 @@ pgo: clean
 	@mkdir -p $(OBJ) $(BIN)
 	@$(MAKE) --no-print-directory CXXFLAGS="$(CXXFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction" \
 	         CFLAGS="$(CFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction" \
-	         LDFLAGS="$(LDFLAGS) -fprofile-use=$(PGO_DIR)" v5
+	         LDFLAGS="$(LDFLAGS) -fprofile-use=$(PGO_DIR)" v9
 	@rm -rf $(PGO_DIR)
 	@echo "=== PGO build complete ==="
 
-.PHONY: all clean check-sizes test benchmark pgo $(foreach v,$(VERSIONS),v$(v))
+.PHONY: all clean check check-sizes test benchmark pgo $(foreach v,$(VERSIONS),v$(v))

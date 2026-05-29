@@ -10,6 +10,7 @@ Group 07 - Universidade de Aveiro
 
 | Version | Date | Key Features | Performance | Status |
 |---------|------|--------------|-------------|--------|
+| **v10.0** | 2026-04-14 | **v9 pipeline + glibc rand() PRNG / Kolmogorov detection** | 54.3% avg; **PRNG data 2MB → 14 bytes (0.0007%)** | **Production (AIT demo)** |
 | **v9.0** | 2026-04-12 | **LZP + X86 Filter + Per-Block Multi-Pipeline Search + Order-1/2** | 54.32% avg, **Wins 3/8 files, Beats all tools on A/E/G** | **Production (Best Ratio)** |
 | **v8.0** | 2026-04-09 | **LZ4-style LZ77 Hash-Table Matching (no entropy coding)** | 38-88% ratio, **~200 MB/s compress, ~300 MB/s decompress** | **Production (Ultra-Fast)** |
 | **v7.0** | 2026-04-08 | **BWT + MTF + 2-Way Interleaved rANS Order-0** | 59.2% avg, **51 MB/s decompress** | **Production (Speed)** |
@@ -24,6 +25,18 @@ Group 07 - Universidade de Aveiro
 ---
 
 ## Version Details
+
+### v10.0 (April 2026) - Production (AIT Demonstration)
+
+**Major Updates:**
+- Runs v9's per-block best-ratio candidate search, plus a PRNG detector
+- Brute-forces glibc `rand()` seeds (0–65535); on a match, stores only model id + seed + length
+- On File D (glibc `rand()`, seed 1): 2,000,000 bytes → **14 bytes** (0.0007%)
+- Demonstrates the gap between Shannon entropy (~8 bits/byte) and Kolmogorov complexity (~14 bytes)
+
+**Performance:** same ratio/speed as v9 on non-PRNG data; instant, 14-byte output on PRNG data. Lossless on all 8 test files. Implemented in `src/model/prng_model.cpp`.
+
+---
 
 ### v8.0 (April 2026) - Production (Ultra-Fast)
 
@@ -629,20 +642,25 @@ Version 5.0 represents a comprehensive advancement from v4.0, incorporating **11
 
 ## Files by Version
 
-| Version | Binaries | Documentation |
-|---------|----------|---------------|
-| v1.0 | — | README.md |
-| v2.0 | — | README.md |
-| v3.0 | — | README.md |
-| v4.0 | G07-V4-C, G07-V4-D | README.md |
-| v5.0 | g07-v5-c, g07-v5-d | README.md (comprehensive) |
-| v6.1 | g07-v6-c, g07-v6-d | README.md, ARCHITECTURE.md, LESSONS_LEARNED.md |
-| v7.0 | g07-v7-c (84KB), g07-v7-d (56KB) | README.md |
-| v8.0 | g07-v8-c (36KB), g07-v8-d (36KB) | README.md |
-| v9.0 | G07-V9-C (116KB), G07-V9-D (84KB) | README.md |
+All version binaries live under `versions/g07_vX.Y/` (prebuilt, for reference). The current source in `src/` builds **v6–v10**.
 
-**Note:** v9.0 is the best-ratio production version (wins 3/8 files vs all tools). v5.2 is the balanced production version. v7.0 is the fast (BWT-based) production version. v8.0 is the ultra-fast (LZ77-based) production version. v6.1 is a failed experiment.
+| Folder | Binaries | Documentation |
+|--------|----------|---------------|
+| g07_v1.0 | G07-V1-C, G07-V1-D | README.md |
+| g07_v2.0 | G07-V2-C, G07-V2-D | README.md |
+| g07_v3.0 | G07-V3-C, G07-V3-D | README.md |
+| g07_v4.0 | G07-V4-C, G07-V4-D | README.md |
+| g07_v5.0 | G07-V5-C, G07-V5-D | README.md (comprehensive) |
+| g07_v6.0 | G07-V6.1-C, G07-V6.1-D | README.md, ARCHITECTURE.md, LESSONS_LEARNED.md |
+| g07_v7.0 | G07-V7-C, G07-V7-D | README.md |
+| g07_v8.0 | G07-V8-C, G07-V8-D | README.md |
+| g07_v9.0 | G07-V9-C, G07-V9-D | README.md |
+| g07_v10.0 | G07-V10-C, G07-V10-D | (see top-level README) |
+
+**Naming note:** a redundant `g07_v5.1/` folder was removed — its binaries were mislabeled `G07-V9-*` but actually ran the v5-series pipeline (BWT+MTF+ZRLE+Order-1), duplicating `g07_v5.0/`. The genuine v9 (per-block candidate search) is in `g07_v9.0/`.
+
+**Production versions:** v9 (best ratio) → v10 (best ratio + PRNG); v7 (fast, BWT-based); v8 (ultra-fast, LZ77). v5.x is the superseded predecessor of v9; v6.1 is a failed experiment.
 
 ---
 
-*Last updated: 2026-04-13 (v9.0 best-ratio release)*
+*Last updated: 2026-05-29 (added v10; corrected version-binary naming)*
